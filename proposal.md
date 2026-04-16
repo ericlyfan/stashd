@@ -30,14 +30,15 @@ There is no general-purpose, AI-powered document inbox that just works for any t
 
 ## Solution
 
-Stashd provides a universal document inbox with an AI layer that handles all classification and organization automatically.
+Stashd provides a universal document inbox with an AI layer that handles all classification and organization automatically, with human override always available.
 
 ### Core User Flow
 
 1. **Drop** — User uploads one or more files via drag-and-drop or file picker (supports PDF, JPG, PNG, HEIC, DOCX, and more)
 2. **Process** — AI reads the document content and infers category, tags, key dates, amounts, parties involved, and a plain-language summary
-3. **File** — Document is stored under the correct category with metadata attached
-4. **Retrieve** — User browses by category/folder or searches across all documents by keyword, tag, date, or amount
+3. **Review** — AI classification is presented to the user; they can accept as-is or override category, tags, and fields before filing
+4. **File** — Document is stored locally under the correct category with metadata attached
+5. **Retrieve** — User browses by category/folder or searches across all documents by keyword, tag, date, or amount
 
 The entire process from upload to filed takes under 5 seconds per document.
 
@@ -47,38 +48,42 @@ The entire process from upload to filed takes under 5 seconds per document.
 
 ### MVP (Version 1.0)
 
-| Feature                | Description                                                         |
+| Feature | Description |
 | ---------------------- | ------------------------------------------------------------------- |
-| Drag-and-drop upload   | Multi-file upload with progress indicators                          |
-| AI auto-categorization | Claude reads content and assigns category + tags                    |
-| Auto-generated summary | 1–2 sentence plain-language summary per document                    |
-| Key field extraction   | Extracts date, amount, vendor/party, document type where applicable |
-| Category/folder view   | Left sidebar navigation by category                                 |
-| Document preview       | In-app preview for PDFs and images                                  |
-| Full-text search       | Search across document names, summaries, tags, and extracted fields |
-| Manual override        | User can reassign category or edit tags after AI classification     |
-| Rename & notes         | User can add personal notes to any document                         |
+| Drag-and-drop upload | Multi-file upload with progress indicators |
+| AI auto-categorization | Local model reads content and assigns category + tags |
+| Auto-generated summary | 1–2 sentence plain-language summary per document |
+| Key field extraction | Extracts date, amount, vendor/party, document type where applicable |
+| Human-in-the-loop | User can accept AI classification or override category/tags before filing |
+| Category/folder view | Left sidebar navigation by category |
+| Document preview | In-app preview for PDFs and images |
+| Full-text search | Search across document names, summaries, tags, and extracted fields |
+| Manual override | User can reassign category or edit tags after filing |
+| Rename & notes | User can add personal notes to any document |
+| Local persistence | Documents and metadata stored on local filesystem (JSON manifest) |
 
 ### Version 1.5 (Post-Launch)
 
-| Feature                | Description                                                           |
+| Feature | Description |
 | ---------------------- | --------------------------------------------------------------------- |
-| Custom categories      | User-defined categories in addition to defaults                       |
-| Bulk upload            | Drop an entire folder at once                                         |
-| Duplicate detection    | Flag when a document appears to already exist                         |
-| Expiry alerts          | Flag documents with upcoming expiry dates (insurance, IDs, contracts) |
-| Export to Google Drive | One-click sync of a folder or all documents                           |
-| Mobile upload          | Upload directly from phone camera (progressive web app)               |
+| Cloud storage | Migrate from local filesystem to Supabase (auth + DB + storage) |
+| Custom categories | User-defined categories in addition to defaults |
+| Bulk upload | Drop an entire folder at once |
+| Duplicate detection | Flag when a document appears to already exist |
+| Expiry alerts | Flag documents with upcoming expiry dates (insurance, IDs, contracts) |
+| Export to Google Drive | One-click sync of a folder or all documents |
+| Mobile upload | Upload directly from phone camera (progressive web app) |
 
 ### Version 2.0 (Future Vision)
 
-| Feature                    | Description                                                                       |
+| Feature | Description |
 | -------------------------- | --------------------------------------------------------------------------------- |
-| Voice dump                 | Speak notes or context; AI attaches them to the right document                    |
-| Multi-user / shared vaults | Families, small businesses, construction projects share a Stashd workspace        |
-| Accountant export          | Generate organized expense reports from receipts by date range                    |
-| Document Q&A               | Ask questions across your documents ("What did I spend at Home Depot last year?") |
-| Integrations               | Email forwarding inbox, WhatsApp photo drop, Slack bot                            |
+| Agentic tasks | Agent can act on documents on the user's behalf ("summarize all receipts from last month", "find my insurance expiry date", "generate an expense report") |
+| Voice dump | Speak notes or context; AI attaches them to the right document |
+| Multi-user / shared vaults | Families, small businesses, construction projects share a Stashd workspace |
+| Accountant export | Generate organized expense reports from receipts by date range |
+| Document Q&A | Ask questions across your documents ("What did I spend at Home Depot last year?") |
+| Integrations | Email forwarding inbox, WhatsApp photo drop, Slack bot |
 
 ---
 
@@ -104,9 +109,58 @@ Stashd ships with a sensible default category set that covers the majority of pe
 
 ## AI Layer
 
-### How It Works
+### Model Provider Architecture (Strategy + Adapter Pattern)
 
-Each uploaded document is passed to the Claude API (Anthropic) along with a structured prompt that instructs it to return a JSON object containing:
+The AI layer is built around a **Strategy + Adapter** pattern to allow seamless swapping of model providers without touching core application logic.
+
+#### Strategy Interface
+
+All model providers implement a common `ModelProvider` interface:
+
+```typescript
+interface ModelProvider {
+  classify(document: DocumentInput): Promise<ClassificationResult>;
+  summarize(document: DocumentInput): Promise<string>;
+  extract(document: DocumentInput): Promise<ExtractedFields>;
+}
+```
+
+The application only ever talks to this interface — it has no knowledge of the underlying provider.
+
+#### Adapter Per Provider
+
+Each concrete provider adapts the specific model API to the `ModelProvider` interface:
+
+```
+OllamaProvider      → wraps Ollama /api/generate (Gemma 4)
+ClaudeProvider      → wraps Anthropic /v1/messages
+OpenAIProvider      → wraps OpenAI /v1/chat/completions
+```
+
+#### Provider Registry
+
+A single factory/config file resolves which provider to use:
+
+```typescript
+// providers/index.ts
+const providers: Record<string, ModelProvider> = {
+  ollama: new OllamaProvider(),
+  claude: new ClaudeProvider(),
+  openai: new OpenAIProvider(),
+};
+
+export const getProvider = (name: string): ModelProvider => providers[name];
+```
+
+Adding a new provider = create one new file + one line in the registry. No other code changes required.
+
+#### MVP Provider
+
+For MVP, the active provider is **Ollama running locally with Gemma 4**. No API keys or external services required.
+
+### Classification Output
+
+Each document is processed to return:
 
 ```json
 {
@@ -122,11 +176,17 @@ Each uploaded document is passed to the Claude API (Anthropic) along with a stru
 }
 ```
 
-For images (receipts, photos of documents), the file is passed as a base64-encoded image to Claude's vision model. For PDFs and text documents, text is extracted first, then passed to the API.
+For images (receipts, photos of documents), the file is passed as base64 to the model's vision capability. For PDFs and text documents, text is extracted first, then passed to the model.
 
-### Confidence & Fallback
+### Human-in-the-Loop
 
-If the confidence score is below a threshold (e.g. 0.75), the document is flagged for user review rather than auto-filed. The user sees a prompt: _"We weren't sure where to put this — does one of these categories fit?"_
+After classification, the user is shown the AI's suggested category, tags, and extracted fields before the document is filed. They can:
+
+- **Accept** — file as suggested with one click
+- **Override** — edit any field before filing
+- **Flag for later** — defer the decision
+
+If the confidence score is below a threshold (e.g. 0.75), the review step is mandatory rather than optional.
 
 ---
 
@@ -141,34 +201,39 @@ If the confidence score is below a threshold (e.g. 0.75), the document is flagge
 
 ### Backend
 
-- **Next.js** (API routes) or **Node.js + Express**
-- **Supabase** — PostgreSQL database for document metadata + authentication
-- **Supabase Storage** — file storage (backed by S3)
-- **Anthropic API** — Claude for document classification and extraction
+- **Node.js + Express** — API server
+- **Ollama** — local model inference (Gemma 4 for MVP)
+- **Local filesystem** — document storage + JSON manifest for metadata
 
-### Infrastructure
+### Infrastructure (MVP)
 
+- Fully local — no cloud services, no auth, no database
+- Run with `npm run dev` (frontend) + `node server.js` (backend) + `ollama serve`
+
+### Data Model (MVP — Local JSON Manifest)
+
+```
+manifest.json
+  documents: [
+    {
+      id, filename, original_name,
+      storage_path, file_type, file_size,
+      category, subcategory, tags[],
+      summary, date_extracted, amount, vendor,
+      confidence_score, reviewed (bool),
+      notes,
+      created_at, updated_at
+    }
+  ]
+  categories: [
+    { id, name, color, icon, is_custom }
+  ]
+```
+
+### Future Stack (V1.5+)
+
+- **Supabase** — PostgreSQL + auth + file storage (replaces local filesystem)
 - **Vercel** — frontend deployment
-- **Supabase** — managed backend + storage
-- No custom server infrastructure needed for MVP
-
-### Data Model (simplified)
-
-```
-User
-  id, email, created_at
-
-Document
-  id, user_id, filename, original_name
-  storage_path, file_type, file_size
-  category, subcategory, tags[]
-  summary, date_extracted, amount, vendor
-  confidence_score, reviewed (bool)
-  created_at, updated_at
-
-Category
-  id, user_id, name, color, icon, is_custom
-```
 
 ---
 
@@ -190,7 +255,8 @@ Stashd should feel like a **refined, minimal tool** — clean enough to trust wi
 2. **Category View** — Grid or list of documents within a selected category
 3. **Document Detail** — Preview pane + AI summary + tags + extracted fields + notes
 4. **Upload State** — Drop zone with live processing feedback per file
-5. **Search Results** — Filtered view with highlighted matching terms
+5. **Classification Review** — AI-suggested fields with accept/override controls before filing
+6. **Search Results** — Filtered view with highlighted matching terms
 
 ---
 
@@ -213,29 +279,25 @@ Stashd should feel like a **refined, minimal tool** — clean enough to trust wi
 
 For MVP, Stashd is free with generous limits to drive adoption. Future tiers:
 
-| Tier     | Price  | Limits                                                                     |
+| Tier | Price | Limits |
 | -------- | ------ | -------------------------------------------------------------------------- |
-| Free     | $0/mo  | 50 documents, 500MB storage, default categories                            |
-| Personal | $5/mo  | Unlimited documents, 5GB storage, custom categories, expiry alerts         |
-| Pro      | $12/mo | Unlimited everything, Google Drive sync, multi-device, priority processing |
-| Team     | $25/mo | Shared workspace, up to 5 users, admin controls                            |
+| Free | $0/mo | 50 documents, 500MB storage, default categories |
+| Personal | $5/mo | Unlimited documents, 5GB storage, custom categories, expiry alerts |
+| Pro | $12/mo | Unlimited everything, Google Drive sync, multi-device, priority processing |
+| Team | $25/mo | Shared workspace, up to 5 users, admin controls |
 
 ---
 
 ## Open Questions & Decisions to Make
 
-These are items to resolve before or during development:
-
-1. **Authentication** — Email/password only, or add Google OAuth from day one?
-2. **Storage limits for MVP** — What's the free tier cap before needing to think about costs?
-3. **File type support** — Start with PDF + images only, or include DOCX/XLSX from launch?
-4. **Category customization** — Allow user-defined categories in V1 or lock to defaults?
-5. **Mobile experience** — PWA from launch or desktop-first and mobile later?
-6. **Onboarding** — Empty state with sample documents, or guided upload flow?
-7. **Privacy & security** — Any specific compliance requirements (PIPEDA for Canadian users)?
-8. **Naming / branding** — Is "Stashd" final? Domain availability check needed.
-9. **Deletion policy** — Soft delete (recoverable) or hard delete?
-10. **Export** — Should users be able to export all their data (zip download) from day one?
+1. **File type support** — Start with PDF + images only, or include DOCX/XLSX from launch?
+2. **Category customization** — Allow user-defined categories in V1 or lock to defaults?
+3. **Mobile experience** — PWA from launch or desktop-first and mobile later?
+4. **Onboarding** — Empty state with sample documents, or guided upload flow?
+5. **Deletion policy** — Soft delete (recoverable) or hard delete?
+6. **Export** — Should users be able to export all their data (zip download) from day one?
+7. **Agentic interface** — When V2.0 agent is built, chat UI or command palette?
+8. **Privacy & security (V1.5+)** — PIPEDA compliance for Canadian users when cloud storage is added
 
 ---
 
@@ -243,28 +305,37 @@ These are items to resolve before or during development:
 
 ### Phase 1 — Core MVP (2–3 weeks)
 
-- Auth (Supabase)
-- File upload + storage
+- File upload + local storage
+- Ollama integration (Gemma 4) via Strategy + Adapter pattern
 - AI classification pipeline
+- Human-in-the-loop review/override UI
 - Category/folder view
 - Document preview
 - Basic search
+- Local JSON manifest persistence
 
 ### Phase 2 — Polish (1–2 weeks)
 
-- Manual category override
 - Tags editing
 - Personal notes on documents
-- Confidence-based review flag
+- Confidence-based mandatory review flag
 - Empty states + onboarding
 
-### Phase 3 — Growth Features (ongoing)
+### Phase 3 — Cloud Migration (V1.5)
 
+- Supabase auth + DB + storage
 - Custom categories
 - Expiry alerts
 - Google Drive export
 - Mobile PWA
 - Bulk upload
+
+### Phase 4 — Agentic Layer (V2.0)
+
+- Agent interface for document tasks
+- Document Q&A
+- Integrations (email, WhatsApp, Slack)
+- Multi-user shared vaults
 
 ---
 
