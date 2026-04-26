@@ -24,8 +24,9 @@ export class FileService {
       const files = await readdir(this.tempDir(jobId));
       if (files.length === 0) return null;
       return join(this.tempDir(jobId), files[0]);
-    } catch {
-      return null;
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw err;
     }
   }
 
