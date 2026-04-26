@@ -39,7 +39,6 @@ export class ClassificationService {
       return { filename, mimeType: 'image/jpeg', content: `data:image/jpeg;base64,${b64}`, isImage: true };
     }
 
-    // image/jpeg, image/png
     const buffer = await readFile(filePath);
     const b64 = buffer.toString('base64');
     return { filename, mimeType, content: `data:${mimeType};base64,${b64}`, isImage: true };

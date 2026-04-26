@@ -9,7 +9,4 @@
     "dev:server": "npm run dev --workspace=packages/server",
     "test": "npm run test --workspaces --if-present"
   },
-  "devDependencies": {
-    "@types/pdf-parse": "^1.1.5"
-  }
 }
