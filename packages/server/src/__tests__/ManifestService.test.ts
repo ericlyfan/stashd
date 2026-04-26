@@ -98,4 +98,19 @@ describe('ManifestService', () => {
   it('returns false when removing nonexistent document', () => {
     expect(service.removeDocument('missing')).toBe(false);
   });
+
+  it('throws on non-ENOENT errors when loading', async () => {
+    // Use a separate temp dir so manifest.json does not already exist as a file
+    const { mkdir: mkdirFs, mkdtemp: mkdtempFs, rm: rmFs } = await import('fs/promises');
+    const freshDir = await mkdtempFs(join(tmpdir(), 'stashd-manifest-eisdir-'));
+    try {
+      // Place a directory where manifest.json should be, so readFile throws EISDIR
+      await mkdirFs(join(freshDir, 'manifest.json'));
+
+      const service2 = new ManifestService(freshDir);
+      await expect(service2.load()).rejects.toThrow();
+    } finally {
+      await rmFs(freshDir, { recursive: true });
+    }
+  });
 });

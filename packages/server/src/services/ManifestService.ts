@@ -35,7 +35,8 @@ export class ManifestService {
     try {
       const raw = await readFile(this.manifestPath, 'utf-8');
       this.manifest = JSON.parse(raw) as Manifest;
-    } catch {
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
       this.manifest = { documents: [], categories: DEFAULT_CATEGORIES };
       await this.save();
     }
