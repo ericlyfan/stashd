@@ -1,6 +1,6 @@
 import { Router } from 'express';
-import { writeFile, stat } from 'fs/promises';
-import { join } from 'path';
+import { writeFile } from 'fs/promises';
+import { join, basename } from 'path';
 import multer from 'multer';
 import { v4 as uuidv4 } from 'uuid';
 import { ManifestService } from '../services/ManifestService';
@@ -9,6 +9,11 @@ import { ClassificationService } from '../services/ClassificationService';
 import { CategoryId, Document, SSEEvent } from '@stashd/shared';
 
 const ALLOWED_MIMES = ['application/pdf', 'image/jpeg', 'image/png', 'image/heic', 'image/heif'];
+const VALID_CATEGORY_IDS = new Set<string>([
+  'receipts-expenses', 'contracts-agreements', 'identity-personal',
+  'insurance', 'medical-health', 'property-construction', 'business',
+  'tax-finance', 'legal', 'warranties-manuals', 'education', 'travel', 'other',
+]);
 const MAX_SIZE_BYTES = 50 * 1024 * 1024;
 
 function getMimeFromExtension(filename: string): string {
@@ -62,7 +67,7 @@ export function createDocumentRoutes(services: Services): Router {
 
     const jobId = uuidv4();
     const dir = await fileService.createTempDir(jobId);
-    await writeFile(join(dir, req.file.originalname), req.file.buffer);
+    await writeFile(join(dir, basename(req.file.originalname)), req.file.buffer);
 
     res.json({ jobId });
   });
@@ -120,18 +125,21 @@ export function createDocumentRoutes(services: Services): Router {
     const tempPath = await fileService.getTempFilePath(jobId);
     if (!tempPath) return res.status(404).json({ error: 'Job not found' });
 
+    if (!VALID_CATEGORY_IDS.has(category)) {
+      return res.status(400).json({ error: `Invalid category: ${category}` });
+    }
+
     const id = uuidv4();
-    const originalName = tempPath.split('/').pop() ?? 'file';
+    const originalName = basename(tempPath);
     const mimeType = getMimeFromExtension(originalName);
-    const tempStats = await stat(tempPath);
-    const fileSize = tempStats.size;
+    const fileSize = await fileService.getFileSize(tempPath);
 
     const storagePath = await fileService.moveToDocuments(jobId, category, id, originalName);
 
     const now = new Date().toISOString();
     const doc: Document = {
       id,
-      filename: storagePath.split('/').pop() ?? id,
+      filename: basename(storagePath),
       originalName,
       storagePath,
       fileType: mimeType,
@@ -193,7 +201,9 @@ export function createDocumentRoutes(services: Services): Router {
     const doc = manifestService.getDocument(req.params.id);
     if (!doc) return res.status(404).json({ error: 'Document not found' });
 
-    await fileService.deleteDocument(doc.storagePath).catch(() => {});
+    await fileService.deleteDocument(doc.storagePath).catch((err: unknown) => {
+      console.warn(`Could not delete file for document ${req.params.id}:`, (err as Error).message);
+    });
     manifestService.removeDocument(req.params.id);
     await manifestService.save();
 
