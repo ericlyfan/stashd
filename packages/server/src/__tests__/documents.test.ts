@@ -136,13 +136,7 @@ describe('Document CRUD routes', () => {
   });
 
   it('POST /api/documents/file/:jobId with flagForLater sets status=pending', async () => {
-    const uploadRes = await request(app)
-      .post('/api/documents/upload')
-      .attach('file', Buffer.from('%PDF-1.4'), { filename: 'doc.pdf', contentType: 'application/pdf' });
-    const { jobId } = uploadRes.body as { jobId: string };
-    const fileRes = await request(app)
-      .post(`/api/documents/file/${jobId}`)
-      .send({ category: 'other', tags: [], summary: 'Pending doc', confidenceScore: 0.5, flagForLater: true });
-    expect(fileRes.body.status).toBe('pending');
+    const doc = await uploadAndFile({ flagForLater: true, summary: 'Pending doc', confidenceScore: 0.5 });
+    expect((doc as unknown as { status: string }).status).toBe('pending');
   });
 });
