@@ -1,6 +1,12 @@
 import { CategoryId, ClassificationResult, DocumentInput } from '@stashd/shared';
 import { ModelProvider } from './ModelProvider';
 
+const VALID_CATEGORIES = new Set<string>([
+  'receipts-expenses', 'contracts-agreements', 'identity-personal',
+  'insurance', 'medical-health', 'property-construction', 'business',
+  'tax-finance', 'legal', 'warranties-manuals', 'education', 'travel', 'other',
+]);
+
 const OLLAMA_BASE = process.env.OLLAMA_URL ?? 'http://localhost:11434';
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL ?? 'gemma4';
 
@@ -48,7 +54,7 @@ export class OllamaProvider implements ModelProvider {
     const parsed = JSON.parse(data.response) as Partial<ClassificationResult>;
 
     return {
-      category: (parsed.category ?? 'other') as CategoryId,
+      category: (parsed.category && VALID_CATEGORIES.has(parsed.category) ? parsed.category : 'other') as CategoryId,
       subcategory: parsed.subcategory,
       tags: Array.isArray(parsed.tags) ? parsed.tags : [],
       summary: parsed.summary ?? '',
