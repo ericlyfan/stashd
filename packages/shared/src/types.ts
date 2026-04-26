@@ -1,3 +1,18 @@
+export type CategoryId =
+  | 'receipts-expenses'
+  | 'contracts-agreements'
+  | 'identity-personal'
+  | 'insurance'
+  | 'medical-health'
+  | 'property-construction'
+  | 'business'
+  | 'tax-finance'
+  | 'legal'
+  | 'warranties-manuals'
+  | 'education'
+  | 'travel'
+  | 'other';
+
 export interface Document {
   id: string;
   filename: string;
@@ -5,7 +20,7 @@ export interface Document {
   storagePath: string;
   fileType: string;
   fileSize: number;
-  category: string;
+  category: CategoryId;
   subcategory?: string;
   tags: string[];
   summary: string;
@@ -20,7 +35,7 @@ export interface Document {
 }
 
 export interface Category {
-  id: string;
+  id: CategoryId;
   name: string;
   color: string;
   icon: string;
@@ -35,7 +50,7 @@ export interface DocumentInput {
 }
 
 export interface ClassificationResult {
-  category: string;
+  category: CategoryId;
   subcategory?: string;
   tags: string[];
   summary: string;
