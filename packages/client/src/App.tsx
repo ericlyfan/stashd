@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Document } from '@stashd/shared';
 import { listDocuments, listCategories, CategoryWithCount } from './api/client';
-import { Toolbar, TrafficLights, ToolbarButton, PrimaryButton, SearchField } from './components/chrome';
+import { Toolbar, ToolbarButton, PrimaryButton, SearchField } from './components/chrome';
 import Sidebar, { NavTarget } from './components/Sidebar';
 import InboxView, { PendingJob } from './components/InboxView';
 import CategoryView from './components/CategoryView';
@@ -137,14 +137,10 @@ export default function App() {
 
   return (
     <div style={{
-      width: 1280, height: 820,
-      borderRadius: 14,
+      width: '100vw', height: '100vh',
       overflow: 'hidden',
       background: 'var(--bg)',
-      boxShadow: '0 0 0 0.5px rgba(0,0,0,0.18), 0 30px 80px rgba(0,0,0,0.28), 0 12px 30px rgba(0,0,0,0.16)',
       display: 'flex', position: 'relative',
-      maxWidth: 'calc(100vw - 56px)',
-      maxHeight: 'calc(100vh - 56px)',
     }}>
       {/* Sidebar */}
       <Sidebar
@@ -238,7 +234,7 @@ export default function App() {
       {/* Drag overlay */}
       {dragOver ? (
         <div style={{
-          position: 'absolute', inset: 12, borderRadius: 14,
+          position: 'absolute', inset: 0,
           border: '2px dashed var(--accent)',
           background: 'rgba(13,111,106,0.08)',
           backdropFilter: 'blur(6px)', WebkitBackdropFilter: 'blur(6px)',
@@ -258,11 +254,6 @@ export default function App() {
         onClose={() => setUploadOpen(false)}
         onComplete={handleUploadComplete}
       />
-
-      {/* Traffic lights pinned top-left */}
-      <div style={{ position: 'absolute', top: 16, left: 16, zIndex: 100 }}>
-        <TrafficLights />
-      </div>
     </div>
   );
 }
