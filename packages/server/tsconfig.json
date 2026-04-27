@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "module": "Node16",
+    "moduleResolution": "node16",
+    "outDir": "dist",
+    "paths": {
+      "@stashd/shared": ["../shared/src/index.ts"]
+    }
+  },
+  "include": ["src"]
+}
