@@ -1,4 +1,6 @@
-import { Category, ClassificationResult, Document } from '@stashd/shared';
+import { Category, ClassificationResult as SharedClassificationResult, Document, SSEEvent } from '@stashd/shared';
+
+export type { ClassificationResult } from '@stashd/shared';
 
 const BASE = '/api';
 
@@ -65,4 +67,21 @@ export interface CategoryWithCount extends Category {
 
 export function listCategories(): Promise<CategoryWithCount[]> {
   return req<CategoryWithCount[]>('/categories');
+}
+
+export function subscribeClassify(jobId: string, onEvent: (event: SSEEvent) => void): EventSource {
+  const es = new EventSource(`${BASE}/documents/process/${jobId}`);
+  es.onmessage = (e) => {
+    try {
+      const event = JSON.parse(e.data) as SSEEvent;
+      onEvent(event);
+    } catch {
+      // ignore malformed events
+    }
+  };
+  es.onerror = () => {
+    onEvent({ stage: 'error', message: 'Connection lost', error: 'SSE connection failed' });
+    es.close();
+  };
+  return es;
 }
