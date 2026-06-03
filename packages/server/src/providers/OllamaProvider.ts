@@ -9,6 +9,7 @@ const VALID_CATEGORIES = new Set<string>([
 
 const OLLAMA_BASE = process.env.OLLAMA_URL ?? 'http://localhost:11434';
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL ?? 'gemma4';
+const OLLAMA_API_KEY = process.env.OLLAMA_API_KEY;
 
 const SYSTEM_PROMPT = `You are a document classification assistant. Analyze the provided document and return ONLY a JSON object with these exact fields:
 {
@@ -40,9 +41,12 @@ export class OllamaProvider implements ModelProvider {
       body.images = [doc.content.replace(/^data:[^;]+;base64,/, '')];
     }
 
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (OLLAMA_API_KEY) headers.Authorization = `Bearer ${OLLAMA_API_KEY}`;
+
     const res = await fetch(`${OLLAMA_BASE}/api/generate`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(body),
     });
 

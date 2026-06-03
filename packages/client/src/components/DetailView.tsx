@@ -1,82 +1,90 @@
 import { useState } from 'react';
 import { Document } from '@stashd/shared';
 import { updateDocument } from '../api/client';
-import { getCategoryMeta, IconSparkle, IconCalendar, IconDollar, IconBuilding, IconClock, IconPlus, IconTag } from './icons';
+import { getCategoryMeta, IconSparkle, IconCalendar, IconDollar, IconBuilding, IconClock, IconPlus, IconTag, IconNote } from './icons';
 import { Tag, fmtDate, fmtMoney, relTime, isImageFile } from './InboxView';
 
 // ── DocPreview ────────────────────────────────────────────────────────────────
 
+const HEIC_MIMES = new Set(['image/heic', 'image/heif']);
+
 function DocPreview({ doc }: { doc: Document }) {
-  const meta = getCategoryMeta(doc.category);
+  const fileUrl = `/api/documents/${doc.id}/file`;
+
+  if (HEIC_MIMES.has(doc.fileType)) {
+    return <UnsupportedPreview doc={doc} fileUrl={fileUrl} reason="HEIC images can't be previewed in-browser." />;
+  }
 
   if (isImageFile(doc.fileType)) {
     return (
-      <div style={{
-        background: '#fff', borderRadius: 6,
-        boxShadow: '0 8px 30px rgba(0,0,0,0.10)',
-        width: 280, padding: '24px 22px',
-        margin: '0 auto',
-        fontFamily: 'ui-monospace, "SF Mono", Menlo, Consolas, monospace',
-        fontSize: 11, color: '#222', lineHeight: 1.6,
-      }}>
-        <div style={{ textAlign: 'center', fontWeight: 700, fontSize: 13, letterSpacing: 0.4 }}>
-          {(doc.vendor || 'RECEIPT').toUpperCase()}
-        </div>
-        <div style={{ textAlign: 'center', fontSize: 10, color: '#666', marginBottom: 14 }}>
-          {fmtDate(doc.dateExtracted)}
-        </div>
-        <div style={{ borderTop: '1px dashed #aaa', borderBottom: '1px dashed #aaa', padding: '8px 0', marginBottom: 8 }}>
-          {(['Receipt for', 'Item 1', 'Item 2', 'Item 3', 'Subtotal'] as const).map((k, i) => (
-            <div key={i} style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span>{k}</span>
-              <span>{i > 0 ? '—' : ''}</span>
-            </div>
-          ))}
-        </div>
-        {doc.amount != null ? (
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700 }}>
-            <span>TOTAL</span><span>{fmtMoney(doc.amount)}</span>
-          </div>
-        ) : null}
-        <div style={{ marginTop: 14, fontSize: 9, color: '#888', textAlign: 'center' }}>
-          THANK YOU FOR YOUR PURCHASE<br />★ ★ ★ ★ ★
-        </div>
-      </div>
+      <img
+        src={fileUrl}
+        alt={doc.originalName}
+        style={{
+          display: 'block', maxWidth: '100%', maxHeight: '100%',
+          margin: '0 auto', borderRadius: 6,
+          background: '#fff',
+          boxShadow: '0 8px 30px rgba(0,0,0,0.12)',
+        }}
+      />
     );
   }
 
+  if (doc.fileType === 'application/pdf') {
+    return (
+      <iframe
+        src={fileUrl}
+        title={doc.originalName}
+        style={{
+          width: '100%', height: '100%', minHeight: 480,
+          border: 'none', borderRadius: 6, background: '#fff',
+          boxShadow: '0 8px 30px rgba(0,0,0,0.12)',
+        }}
+      />
+    );
+  }
+
+  return <UnsupportedPreview doc={doc} fileUrl={fileUrl} reason="This file type can't be previewed in-app." />;
+}
+
+function UnsupportedPreview({ doc, fileUrl, reason }: { doc: Document; fileUrl: string; reason: string }) {
+  const meta = getCategoryMeta(doc.category);
+  const Ico = meta.icon;
   return (
     <div style={{
-      background: '#fff', borderRadius: 4,
-      boxShadow: '0 8px 30px rgba(0,0,0,0.12)',
-      width: 320, aspectRatio: '8.5 / 11',
-      margin: '0 auto', padding: '32px 30px',
-      position: 'relative', fontSize: 9, color: '#222',
+      background: '#fff', borderRadius: 10,
+      boxShadow: '0 8px 30px rgba(0,0,0,0.10)',
+      width: 320, padding: '32px 24px',
+      margin: '0 auto', textAlign: 'center',
+      display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12,
     }}>
       <div style={{
-        fontFamily: 'var(--font-display)',
-        fontSize: 16, fontWeight: 600, color: meta.color, marginBottom: 4,
-      }}>{doc.subcategory || 'Document'}</div>
-      <div style={{ fontSize: 14, fontWeight: 600, color: '#111', marginBottom: 14 }}>
-        {doc.originalName}
+        width: 56, height: 56, borderRadius: 14,
+        background: `${meta.color}18`, color: meta.color,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}><Ico size={26} /></div>
+      <div>
+        <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink)', marginBottom: 4 }}>
+          {doc.originalName}
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--ink-3)', lineHeight: 1.4 }}>
+          {reason}
+        </div>
       </div>
-      <div style={{ height: 0.5, background: '#ddd', marginBottom: 12 }} />
-      {Array.from({ length: 18 }).map((_, i) => (
-        <div key={i} style={{
-          height: 3, background: 'rgba(0,0,0,0.08)', borderRadius: 1,
-          marginBottom: 5, width: `${65 + ((i * 13) % 30)}%`,
-        }} />
-      ))}
-      <div style={{ height: 12 }} />
-      {Array.from({ length: 10 }).map((_, i) => (
-        <div key={i} style={{
-          height: 3, background: 'rgba(0,0,0,0.08)', borderRadius: 1,
-          marginBottom: 5, width: `${55 + ((i * 17) % 35)}%`,
-        }} />
-      ))}
-      <div style={{ position: 'absolute', bottom: 16, right: 18, fontSize: 8, color: '#999' }}>
-        1 / 1
-      </div>
+      <a
+        href={fileUrl}
+        target="_blank"
+        rel="noreferrer"
+        download={doc.originalName}
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: 6,
+          padding: '6px 12px', borderRadius: 6,
+          background: 'var(--accent)', color: '#fff',
+          fontSize: 12, fontWeight: 600, textDecoration: 'none',
+        }}
+      >
+        <IconNote size={12} />Open file
+      </a>
     </div>
   );
 }
@@ -136,14 +144,21 @@ export default function DetailView({ doc, onCategoryClick, onDocUpdated }: Detai
       <div style={{
         flex: 1.3, minWidth: 0,
         background: '#ebe8e1',
-        padding: '32px 24px',
-        overflow: 'auto',
         borderRight: '0.5px solid var(--line)',
+        display: 'flex', flexDirection: 'column',
       }}>
-        <DocPreview doc={doc} />
+        <div style={{
+          flex: 1, minHeight: 0,
+          padding: '24px 24px 12px',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          overflow: 'auto',
+        }}>
+          <DocPreview doc={doc} />
+        </div>
         <div style={{
           textAlign: 'center', fontSize: 10.5, color: 'var(--ink-3)',
-          marginTop: 12, fontVariantNumeric: 'tabular-nums',
+          padding: '0 24px 14px', fontVariantNumeric: 'tabular-nums',
+          flexShrink: 0,
         }}>
           {doc.filename}
         </div>

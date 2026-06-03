@@ -4,3 +4,5 @@ data/
 *.local
 .env
 .worktrees/
+.DS_Store
+packages/.DS_Store

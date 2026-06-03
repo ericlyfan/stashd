@@ -212,6 +212,7 @@ export default function App() {
           ) : view === 'review' ? (
             <ReviewView
               pendingJobs={pendingJobs}
+              categories={categories}
               onFiled={handleFiled}
               onSkip={() => {}}
               onDiscard={(jobId) => setPendingJobs(prev => prev.filter(j => j.jobId !== jobId))}

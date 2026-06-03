@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
-import { fileDocument, ClassificationResult } from '../api/client';
-import { CATEGORY_META, getCategoryMeta, CategoryIconComponent } from './icons';
+import { useState, useEffect, useMemo } from 'react';
+import { fileDocument, ClassificationResult, CategoryWithCount } from '../api/client';
+import { CATEGORY_META, getCategoryMeta } from './icons';
 import {
   IconSparkle, IconCamera, IconNote, IconChevronDown, IconCheck, IconX, IconPlus,
 } from './icons';
@@ -28,12 +28,25 @@ function ConfidenceBar({ value }: { value: number }) {
 
 // ── CategoryChooser ───────────────────────────────────────────────────────────
 
-const ALL_CATEGORIES = Object.entries(CATEGORY_META).map(([id, meta]) => ({ id: id as CategoryId, ...meta }));
+interface CategoryOption {
+  id: CategoryId;
+  name: string;
+  icon: ReturnType<typeof getCategoryMeta>['icon'];
+  color: string;
+}
 
-function CategoryChooser({ value, onChange }: { value: string; onChange: (id: string) => void }) {
+function CategoryChooser({
+  value, onChange, options,
+}: {
+  value: string;
+  onChange: (id: string) => void;
+  options: CategoryOption[];
+}) {
   const [open, setOpen] = useState(false);
   const meta = getCategoryMeta(value);
   const Ico = meta.icon;
+  const valueLabel = options.find(o => o.id === value)?.name
+    ?? value.split('-').map(s => s.charAt(0).toUpperCase() + s.slice(1)).join(' ');
   return (
     <div style={{ position: 'relative' }}>
       <button
@@ -54,7 +67,7 @@ function CategoryChooser({ value, onChange }: { value: string; onChange: (id: st
           display: 'flex', alignItems: 'center', justifyContent: 'center',
         }}><Ico size={14} /></span>
         <span style={{ flex: 1, fontSize: 13, fontWeight: 500, color: 'var(--ink)' }}>
-          {value.split('-').map(s => s.charAt(0).toUpperCase() + s.slice(1)).join(' ')}
+          {valueLabel}
         </span>
         <IconChevronDown size={14} style={{ color: 'var(--ink-3)' }} />
       </button>
@@ -69,7 +82,7 @@ function CategoryChooser({ value, onChange }: { value: string; onChange: (id: st
             padding: 4, zIndex: 10,
             maxHeight: 300, overflow: 'auto',
           }}>
-            {ALL_CATEGORIES.map(({ id, icon: CatIco, color }) => (
+            {options.map(({ id, name, icon: CatIco, color }) => (
               <button
                 key={id}
                 onClick={() => { onChange(id); setOpen(false); }}
@@ -85,9 +98,7 @@ function CategoryChooser({ value, onChange }: { value: string; onChange: (id: st
                 }}
               >
                 <span style={{ color, display: 'flex' }}><CatIco size={15} /></span>
-                <span style={{ flex: 1 }}>
-                  {id.split('-').map(s => s.charAt(0).toUpperCase() + s.slice(1)).join(' ')}
-                </span>
+                <span style={{ flex: 1 }}>{name}</span>
                 {id === value ? <IconCheck size={13} style={{ color: 'var(--accent)' }} /> : null}
               </button>
             ))}
@@ -198,12 +209,13 @@ function MiniDocPreview({ job, merged }: { job: PendingJob; merged: Partial<Clas
 
 interface ReviewViewProps {
   pendingJobs: PendingJob[];
+  categories: CategoryWithCount[];
   onFiled: (jobId: string) => void;
   onSkip: (jobId: string) => void;
   onDiscard: (jobId: string) => void;
 }
 
-export default function ReviewView({ pendingJobs, onFiled, onSkip, onDiscard }: ReviewViewProps) {
+export default function ReviewView({ pendingJobs, categories, onFiled, onSkip, onDiscard }: ReviewViewProps) {
   const [idx, setIdx] = useState(0);
   const [edits, setEdits] = useState<Record<string, Partial<ClassificationResult>>>({});
   const [filing, setFiling] = useState(false);
@@ -235,6 +247,20 @@ export default function ReviewView({ pendingJobs, onFiled, onSkip, onDiscard }: 
   const merged: ClassificationResult = { ...cur.classification, ...overlay };
   const setField = (k: keyof ClassificationResult, v: unknown) =>
     setEdits(e => ({ ...e, [cur.jobId]: { ...e[cur.jobId], [k]: v } }));
+
+  const categoryOptions = useMemo<CategoryOption[]>(() => {
+    const ids = new Set<string>(categories.map(c => c.id));
+    ids.add(merged.category);
+    const nameById = new Map(categories.map(c => [c.id, c.name]));
+    return Array.from(ids)
+      .filter((id): id is CategoryId => id in CATEGORY_META)
+      .map(id => {
+        const meta = CATEGORY_META[id];
+        const name = nameById.get(id)
+          ?? id.split('-').map(s => s.charAt(0).toUpperCase() + s.slice(1)).join(' ');
+        return { id, name, icon: meta.icon, color: meta.color };
+      });
+  }, [categories, merged.category]);
 
   async function handleFile() {
     setFiling(true);
@@ -341,7 +367,11 @@ export default function ReviewView({ pendingJobs, onFiled, onSkip, onDiscard }: 
               fontSize: 11, fontWeight: 600, color: 'var(--ink-3)',
               textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6,
             }}>Category</div>
-            <CategoryChooser value={merged.category} onChange={(v) => setField('category', v as CategoryId)} />
+            <CategoryChooser
+              value={merged.category}
+              options={categoryOptions}
+              onChange={(v) => setField('category', v as CategoryId)}
+            />
           </div>
 
           {/* Date / Amount */}

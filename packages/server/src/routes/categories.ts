@@ -8,10 +8,12 @@ export function createCategoryRoutes(services: { manifestService: ManifestServic
   router.get('/', (_req, res) => {
     const categories = manifestService.getCategories();
     const documents = manifestService.getDocuments();
-    const result = categories.map(cat => ({
-      ...cat,
-      documentCount: documents.filter(d => d.category === cat.id).length,
-    }));
+    const result = categories
+      .map(cat => ({
+        ...cat,
+        documentCount: documents.filter(d => d.category === cat.id).length,
+      }))
+      .filter(cat => cat.documentCount > 0);
     res.json(result);
   });
 
