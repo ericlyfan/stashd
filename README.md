@@ -42,6 +42,10 @@ OLLAMA_API_KEY=
 # Port for the server to listen on (optional)
 # Default: 3001
 PORT=3001
+
+# AI provider to use (optional)
+# Default: ollama
+PROVIDER=ollama
 ```
 
 | Variable         | Required | Default                  | Description                                        |
@@ -50,6 +54,7 @@ PORT=3001
 | `OLLAMA_MODEL`   | No       | `gemma4`                 | Model name to use for classification               |
 | `OLLAMA_API_KEY` | No       | —                        | Bearer token if your Ollama instance requires auth |
 | `PORT`           | No       | `3001`                   | Port the server listens on                         |
+| `PROVIDER`       | No       | `ollama`                 | AI provider to use for classification              |
 
 ## Running
 
@@ -65,9 +70,26 @@ npm run dev:client
 
 ## API
 
-The server exposes two REST endpoints:
+### Documents
 
-- `GET/POST /api/documents` — list and upload documents
-- `GET /api/categories` — list categories with document counts
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/documents` | List documents (optional `?search=` and `?category=` filters) |
+| `GET` | `/api/documents/:id` | Get a single document |
+| `PATCH` | `/api/documents/:id` | Update a document's category, tags, or notes |
+| `DELETE` | `/api/documents/:id` | Delete a document |
+| `POST` | `/api/documents/upload` | Upload a file — returns `{ jobId }` |
+| `GET` | `/api/documents/process/:jobId` | SSE stream for classification progress (`extracting` → `classifying` → `complete`/`error`) |
+| `POST` | `/api/documents/file/:jobId` | Confirm and file a classified document |
 
-Uploads are processed via SSE (`POST /api/documents/upload`) which streams classification progress back to the client.
+### Categories
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/categories` | List all categories with per-category document counts |
+
+### Upload flow
+
+1. `POST /api/documents/upload` with a `multipart/form-data` `file` field → returns `{ jobId }`
+2. Open an `EventSource` on `GET /api/documents/process/:jobId` to stream classification progress
+3. On `complete`, call `POST /api/documents/file/:jobId` with the classification data to persist the document

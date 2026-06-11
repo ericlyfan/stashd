@@ -1,19 +1,16 @@
-import { CategoryId, ClassificationResult, DocumentInput } from '@stashd/shared';
+import { Category, ClassificationResult, DocumentInput } from '@stashd/shared';
 import { ModelProvider } from './ModelProvider';
-
-const VALID_CATEGORIES = new Set<string>([
-  'receipts-expenses', 'contracts-agreements', 'identity-personal',
-  'insurance', 'medical-health', 'property-construction', 'business',
-  'tax-finance', 'legal', 'warranties-manuals', 'education', 'travel', 'other',
-]);
+import { slugifyCategory } from '../services/categoryStyle';
 
 const OLLAMA_BASE = process.env.OLLAMA_URL ?? 'http://localhost:11434';
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL ?? 'gemma4';
 const OLLAMA_API_KEY = process.env.OLLAMA_API_KEY;
 
-const SYSTEM_PROMPT = `You are a document classification assistant. Analyze the provided document and return ONLY a JSON object with these exact fields:
+function buildSystemPrompt(categories: Category[]): string {
+  const list = categories.map(c => `- "${c.id}" (${c.name})`).join('\n');
+  return `You are a document classification assistant. Analyze the provided document and return ONLY a JSON object with these exact fields:
 {
-  "category": one of: "receipts-expenses"|"contracts-agreements"|"identity-personal"|"insurance"|"medical-health"|"property-construction"|"business"|"tax-finance"|"legal"|"warranties-manuals"|"education"|"travel"|"other",
+  "category": string — see category rules below,
   "subcategory": optional string,
   "tags": array of up to 5 keyword strings,
   "summary": "1-2 sentence plain-language description",
@@ -23,13 +20,20 @@ const SYSTEM_PROMPT = `You are a document classification assistant. Analyze the 
   "parties": array of person or organization names involved,
   "confidence": number 0-1 representing your confidence
 }
+
+Existing categories:
+${list}
+
+Category rules: If an existing category fits, return its exact id. If no existing category fits, return a new category name as a plain string slug (e.g. 'medical-health'). Do not force-fit into an existing category.
+
 Respond ONLY with valid JSON. No markdown, no explanation.`;
+}
 
 export class OllamaProvider implements ModelProvider {
-  async classify(doc: DocumentInput): Promise<ClassificationResult> {
+  async classify(doc: DocumentInput, existingCategories: Category[]): Promise<ClassificationResult> {
     const body: Record<string, unknown> = {
       model: OLLAMA_MODEL,
-      system: SYSTEM_PROMPT,
+      system: buildSystemPrompt(existingCategories),
       prompt: doc.isImage
         ? `Classify this document image. Filename: ${doc.filename}`
         : `Classify this document.\n\nFilename: ${doc.filename}\n\nContent:\n${doc.content.slice(0, 8000)}`,
@@ -58,7 +62,9 @@ export class OllamaProvider implements ModelProvider {
     const parsed = JSON.parse(data.response) as Partial<ClassificationResult>;
 
     return {
-      category: (parsed.category && VALID_CATEGORIES.has(parsed.category) ? parsed.category : 'other') as CategoryId,
+      category: typeof parsed.category === 'string' && parsed.category.trim()
+        ? slugifyCategory(parsed.category)
+        : 'other',
       subcategory: parsed.subcategory,
       tags: Array.isArray(parsed.tags) ? parsed.tags : [],
       summary: parsed.summary ?? '',

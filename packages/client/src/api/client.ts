@@ -1,4 +1,4 @@
-import { Category, ClassificationResult as SharedClassificationResult, Document, SSEEvent } from '@stashd/shared';
+import { Category, Document, SSEEvent } from '@stashd/shared';
 
 export type { ClassificationResult } from '@stashd/shared';
 
@@ -10,6 +10,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     const body = await res.json().catch(() => ({})) as { error?: string };
     throw new Error(body.error ?? `Request failed: ${res.status}`);
   }
+  if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
 }
 

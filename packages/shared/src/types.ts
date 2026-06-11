@@ -1,17 +1,6 @@
-export type CategoryId =
-  | 'receipts-expenses'
-  | 'contracts-agreements'
-  | 'identity-personal'
-  | 'insurance'
-  | 'medical-health'
-  | 'property-construction'
-  | 'business'
-  | 'tax-finance'
-  | 'legal'
-  | 'warranties-manuals'
-  | 'education'
-  | 'travel'
-  | 'other';
+// Categories are dynamic: seeded with "other" and grown as the classifier
+// proposes new ones. Ids are kebab-case slugs (e.g. "medical-health").
+export type CategoryId = string;
 
 export interface Document {
   id: string;
@@ -28,7 +17,7 @@ export interface Document {
   amount?: number;
   vendor?: string;
   confidenceScore: number;
-  status: 'pending' | 'filed';
+  status: "pending" | "filed";
   notes?: string;
   createdAt: string;
   updatedAt: string;
@@ -61,7 +50,7 @@ export interface ClassificationResult {
   confidence: number;
 }
 
-export type ProcessingStage = 'extracting' | 'classifying' | 'complete' | 'error';
+export type ProcessingStage = "extracting" | "classifying" | "complete" | "error";
 
 export interface SSEEvent {
   stage: ProcessingStage;

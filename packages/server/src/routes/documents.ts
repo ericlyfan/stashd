@@ -7,13 +7,9 @@ import { ManifestService } from '../services/ManifestService';
 import { FileService } from '../services/FileService';
 import { ClassificationService } from '../services/ClassificationService';
 import { CategoryId, Document, SSEEvent } from '@stashd/shared';
+import { buildCustomCategory, slugifyCategory } from '../services/categoryStyle';
 
 const ALLOWED_MIMES = ['application/pdf', 'image/jpeg', 'image/png', 'image/heic', 'image/heif'];
-const VALID_CATEGORY_IDS = new Set<string>([
-  'receipts-expenses', 'contracts-agreements', 'identity-personal',
-  'insurance', 'medical-health', 'property-construction', 'business',
-  'tax-finance', 'legal', 'warranties-manuals', 'education', 'travel', 'other',
-]);
 const MAX_SIZE_BYTES = 50 * 1024 * 1024;
 
 function getMimeFromExtension(filename: string): string {
@@ -95,7 +91,7 @@ export function createDocumentRoutes(services: Services): Router {
       send({ stage: 'extracting', message: 'Extracting document content…' });
       send({ stage: 'classifying', message: 'Classifying with AI…' });
 
-      const classification = await classificationService.classify(filePath, mimeType);
+      const classification = await classificationService.classify(filePath, mimeType, manifestService.getCategories());
 
       send({ stage: 'complete', message: 'Classification complete', classification });
     } catch (err) {
@@ -125,8 +121,12 @@ export function createDocumentRoutes(services: Services): Router {
     const tempPath = await fileService.getTempFilePath(jobId);
     if (!tempPath) return res.status(404).json({ error: 'Job not found' });
 
-    if (!VALID_CATEGORY_IDS.has(category)) {
-      return res.status(400).json({ error: `Invalid category: ${category}` });
+    if (typeof category !== 'string' || !category.trim()) {
+      return res.status(400).json({ error: 'Category is required' });
+    }
+    const categoryId = slugifyCategory(category);
+    if (!manifestService.getCategory(categoryId)) {
+      manifestService.addCategory(buildCustomCategory(categoryId));
     }
 
     const id = uuidv4();
@@ -134,7 +134,7 @@ export function createDocumentRoutes(services: Services): Router {
     const mimeType = getMimeFromExtension(originalName);
     const fileSize = await fileService.getFileSize(tempPath);
 
-    const storagePath = await fileService.moveToDocuments(jobId, category, id, originalName);
+    const storagePath = await fileService.moveToDocuments(jobId, categoryId, id, originalName);
 
     const now = new Date().toISOString();
     const doc: Document = {
@@ -144,7 +144,7 @@ export function createDocumentRoutes(services: Services): Router {
       storagePath,
       fileType: mimeType,
       fileSize,
-      category: category as CategoryId,
+      category: categoryId as CategoryId,
       subcategory,
       tags: Array.isArray(tags) ? tags : [],
       summary: summary ?? '',

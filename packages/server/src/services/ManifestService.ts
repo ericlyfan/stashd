@@ -8,19 +8,7 @@ interface Manifest {
 }
 
 const DEFAULT_CATEGORIES: Category[] = [
-  { id: 'receipts-expenses', name: 'Receipts & Expenses', color: '#0d9488', icon: 'receipt', isCustom: false },
-  { id: 'contracts-agreements', name: 'Contracts & Agreements', color: '#6366f1', icon: 'file-signature', isCustom: false },
-  { id: 'identity-personal', name: 'Identity & Personal', color: '#f59e0b', icon: 'id-card', isCustom: false },
-  { id: 'insurance', name: 'Insurance', color: '#3b82f6', icon: 'shield', isCustom: false },
-  { id: 'medical-health', name: 'Medical & Health', color: '#ef4444', icon: 'heart-pulse', isCustom: false },
-  { id: 'property-construction', name: 'Property & Construction', color: '#8b5cf6', icon: 'home', isCustom: false },
-  { id: 'business', name: 'Business', color: '#0ea5e9', icon: 'briefcase', isCustom: false },
-  { id: 'tax-finance', name: 'Tax & Finance', color: '#10b981', icon: 'landmark', isCustom: false },
-  { id: 'legal', name: 'Legal', color: '#f97316', icon: 'scale', isCustom: false },
-  { id: 'warranties-manuals', name: 'Warranties & Manuals', color: '#64748b', icon: 'wrench', isCustom: false },
-  { id: 'education', name: 'Education', color: '#ec4899', icon: 'graduation-cap', isCustom: false },
-  { id: 'travel', name: 'Travel', color: '#14b8a6', icon: 'plane', isCustom: false },
-  { id: 'other', name: 'Other', color: '#9ca3af', icon: 'folder', isCustom: false },
+  { id: 'other', name: 'Other', icon: 'folder', color: '#a8a29e', isCustom: false },
 ];
 
 export class ManifestService {
@@ -36,7 +24,8 @@ export class ManifestService {
       const raw = await readFile(this.manifestPath, 'utf-8');
       this.manifest = JSON.parse(raw) as Manifest;
     } catch (err: unknown) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT' && !(err instanceof SyntaxError)) throw err;
       this.manifest = { documents: [], categories: DEFAULT_CATEGORIES };
       await this.save();
     }
@@ -77,6 +66,16 @@ export class ManifestService {
 
   getCategories(): Category[] {
     return this.manifest.categories;
+  }
+
+  getCategory(id: string): Category | undefined {
+    return this.manifest.categories.find(c => c.id === id);
+  }
+
+  addCategory(category: Category): void {
+    if (!this.getCategory(category.id)) {
+      this.manifest.categories.push(category);
+    }
   }
 
   searchDocuments(query: string, categoryId?: CategoryId): Document[] {

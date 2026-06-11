@@ -1,15 +1,15 @@
 import { readFile } from 'fs/promises';
 import { basename } from 'path';
 import pdfParse from 'pdf-parse';
-import { ClassificationResult, DocumentInput } from '@stashd/shared';
+import { Category, ClassificationResult, DocumentInput } from '@stashd/shared';
 import { ModelProvider } from '../providers/ModelProvider';
 
 export class ClassificationService {
   constructor(private readonly provider: ModelProvider) {}
 
-  async classify(filePath: string, mimeType: string): Promise<ClassificationResult> {
+  async classify(filePath: string, mimeType: string, existingCategories: Category[]): Promise<ClassificationResult> {
     const input = await this.buildInput(filePath, mimeType);
-    return this.provider.classify(input);
+    return this.provider.classify(input, existingCategories);
   }
 
   private async buildInput(filePath: string, mimeType: string): Promise<DocumentInput> {

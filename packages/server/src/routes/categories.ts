@@ -13,7 +13,7 @@ export function createCategoryRoutes(services: { manifestService: ManifestServic
         ...cat,
         documentCount: documents.filter(d => d.category === cat.id).length,
       }))
-      .filter(cat => cat.documentCount > 0);
+
     res.json(result);
   });
 

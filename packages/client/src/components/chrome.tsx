@@ -148,10 +148,11 @@ export function GhostButton({ onClick, children, style = {} }: GhostButtonProps)
 interface SearchFieldProps {
   value: string;
   onChange: (value: string) => void;
+  onSubmit?: (value: string) => void;
   placeholder?: string;
 }
 
-export function SearchField({ value, onChange, placeholder = 'Search documents' }: SearchFieldProps) {
+export function SearchField({ value, onChange, onSubmit, placeholder = 'Search documents' }: SearchFieldProps) {
   return (
     <div style={{
       width: 260, height: 26,
@@ -166,6 +167,7 @@ export function SearchField({ value, onChange, placeholder = 'Search documents' 
       <input
         value={value}
         onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => { if (e.key === 'Enter' && value.trim()) onSubmit?.(value.trim()); }}
         placeholder={placeholder}
         style={{
           flex: 1, border: 'none', background: 'transparent',

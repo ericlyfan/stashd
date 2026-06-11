@@ -1,4 +1,3 @@
-import { CategoryId } from '@stashd/shared';
 import React from 'react';
 
 interface IconProps {
@@ -264,24 +263,41 @@ export const IconTag = (p: IconProps) => (
   </Icon>
 );
 
+export const IconMinus = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M5 12h14" />
+  </Icon>
+);
+
+export const IconTrash = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M4 7h16" />
+    <path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+    <path d="M6 7l1 13a1 1 0 0 0 1 .9h8a1 1 0 0 0 1-.9l1-13" />
+    <path d="M10 11v6M14 11v6" />
+  </Icon>
+);
+
 export type CategoryIconComponent = (p: IconProps) => JSX.Element;
 
-export const CATEGORY_META: Record<CategoryId, { icon: CategoryIconComponent; color: string }> = {
-  'receipts-expenses':     { icon: IconReceipt,   color: '#c8862c' },
-  'contracts-agreements':  { icon: IconContract,  color: '#7a5cc8' },
-  'identity-personal':     { icon: IconID,        color: '#3b6db8' },
-  'insurance':             { icon: IconShield,    color: '#0d6f6a' },
-  'medical-health':        { icon: IconHeart,     color: '#c4423a' },
-  'property-construction': { icon: IconHome,      color: '#8a6e3a' },
-  'business':              { icon: IconBriefcase, color: '#3a3a3c' },
-  'tax-finance':           { icon: IconTax,       color: '#2e7e5b' },
-  'legal':                 { icon: IconScale,     color: '#5a5a5c' },
-  'warranties-manuals':    { icon: IconWrench,    color: '#c8704a' },
-  'education':             { icon: IconBook,      color: '#3b8aa8' },
-  'travel':                { icon: IconPlane,     color: '#7a8a3a' },
-  'other':                 { icon: IconFolder,    color: '#6e6d6a' },
+// Server categories carry an icon *name*; map it to a component here.
+const ICON_BY_NAME: Record<string, CategoryIconComponent> = {
+  'receipt': IconReceipt,
+  'file-signature': IconContract,
+  'id-card': IconID,
+  'shield': IconShield,
+  'heart-pulse': IconHeart,
+  'home': IconHome,
+  'briefcase': IconBriefcase,
+  'landmark': IconTax,
+  'scale': IconScale,
+  'wrench': IconWrench,
+  'graduation-cap': IconBook,
+  'plane': IconPlane,
+  'folder': IconFolder,
 };
 
-export function getCategoryMeta(id: string) {
-  return CATEGORY_META[id as CategoryId] ?? { icon: IconFolder, color: '#6e6d6a' };
+export function iconFor(name?: string): CategoryIconComponent {
+  return ICON_BY_NAME[name ?? ''] ?? IconFolder;
 }
+
