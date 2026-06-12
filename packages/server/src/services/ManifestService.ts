@@ -78,6 +78,13 @@ export class ManifestService {
     }
   }
 
+  removeCategory(id: string): boolean {
+    const idx = this.manifest.categories.findIndex(c => c.id === id);
+    if (idx === -1) return false;
+    this.manifest.categories.splice(idx, 1);
+    return true;
+  }
+
   searchDocuments(query: string, categoryId?: CategoryId): Document[] {
     const q = query.toLowerCase();
     return this.manifest.documents.filter(doc => {
@@ -89,7 +96,8 @@ export class ManifestService {
         doc.tags.some(t => t.toLowerCase().includes(q)) ||
         (doc.vendor?.toLowerCase().includes(q) ?? false) ||
         doc.category.toLowerCase().includes(q) ||
-        (doc.notes?.toLowerCase().includes(q) ?? false)
+        (doc.notes?.toLowerCase().includes(q) ?? false) ||
+        (doc.extractedText?.toLowerCase().includes(q) ?? false)
       );
     });
   }

@@ -1,157 +1,179 @@
-import { useState } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
-import { useApp } from '../state';
-import { IconInbox, IconFolder } from './icons';
+import { useEffect, useRef, useState } from 'react';
+import { NavLink, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
+import { Inbox, Library, Plus, Search } from 'lucide-react';
+import { useStore } from '../store';
+import { batchUpdateDocuments, createCategory } from '../api';
+import { categoryIcon } from '../lib/categoryMeta';
 
-interface SidebarItemProps {
-  label: string;
-  count?: number | null;
-  active?: boolean;
-  onClick: () => void;
-  dotColor?: string;
-  icon?: React.ReactNode;
-  badge?: number | null;
-}
-
-function SidebarItem({ label, count, active, onClick, dotColor, icon, badge }: SidebarItemProps) {
-  const [hovered, setHovered] = useState(false);
-  return (
-    <button
-      onClick={onClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      style={{
-        display: 'flex', alignItems: 'center', gap: 9,
-        width: '100%', padding: '5px 9px',
-        background: active ? 'rgba(13,148,136,0.10)' : hovered ? 'rgba(28,25,23,0.04)' : 'transparent',
-        color: active ? 'var(--accent-deep)' : 'var(--ink-2)',
-        border: 'none', borderRadius: 6,
-        fontSize: 12.5, fontWeight: active ? 600 : 500,
-        textAlign: 'left', cursor: 'pointer',
-        height: 28,
-        transition: 'background 0.12s',
-      }}
-    >
-      {icon ? (
-        <span style={{ display: 'flex', width: 14, justifyContent: 'center', color: active ? 'var(--accent)' : 'var(--ink-3)' }}>
-          {icon}
-        </span>
-      ) : (
-        <span style={{
-          width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
-          background: dotColor ?? 'var(--ink-4)',
-          marginLeft: 3, marginRight: 3,
-          boxShadow: active ? `0 0 0 3px ${dotColor}22` : 'none',
-        }} />
-      )}
-      <span style={{
-        flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-        letterSpacing: -0.05,
-      }}>{label}</span>
-      {badge ? (
-        <span style={{
-          minWidth: 17, height: 17, padding: '0 5px', borderRadius: 9,
-          background: 'var(--accent)', color: '#fff',
-          fontSize: 10, fontWeight: 700,
-          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-          fontVariantNumeric: 'tabular-nums',
-        }}>{badge}</span>
-      ) : count != null && count > 0 ? (
-        <span style={{
-          fontSize: 11, fontWeight: 500, fontVariantNumeric: 'tabular-nums',
-          color: 'var(--ink-4)',
-          background: 'rgba(28,25,23,0.05)',
-          padding: '1px 6px', borderRadius: 8,
-        }}>{count}</span>
-      ) : null}
-    </button>
-  );
-}
+const DRAG_MIME = 'application/x-stashd-docs';
 
 export default function Sidebar() {
+  const { categories, docs, queue, refresh, notify } = useStore();
   const navigate = useNavigate();
   const location = useLocation();
-  const { docs, categories } = useApp();
+  const [params] = useSearchParams();
+  const [query, setQuery] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
-  const pendingCount = docs.filter(d => d.status === 'pending').length;
-  const isHome = location.pathname === '/';
-  const activeCategory = location.pathname.startsWith('/category/')
-    ? decodeURIComponent(location.pathname.split('/')[2] ?? '')
-    : null;
+  async function onDropDocs(e: React.DragEvent, categoryId: string) {
+    e.preventDefault();
+    setDropTarget(null);
+    let ids: string[];
+    try {
+      ids = JSON.parse(e.dataTransfer.getData(DRAG_MIME)) as string[];
+    } catch {
+      return;
+    }
+    if (!Array.isArray(ids) || ids.length === 0) return;
+    try {
+      await batchUpdateDocuments(ids, { category: categoryId });
+      await refresh();
+      const name = categories.find(c => c.id === categoryId)?.name ?? categoryId;
+      notify(`Filed ${ids.length} ${ids.length === 1 ? 'document' : 'documents'} under ${name}`);
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Could not move documents', 'err');
+    }
+  }
+
+  const inboxCount = queue.length + docs.filter(d => d.status === 'pending').length;
+
+  // Keep the box in sync when arriving at /search via URL, clear elsewhere.
+  useEffect(() => {
+    if (location.pathname === '/search') setQuery(params.get('q') ?? '');
+    else setQuery('');
+  }, [location.pathname, params]);
+
+  // “/” focuses search from anywhere.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const tag = (e.target as HTMLElement).tagName;
+      if (e.key === '/' && tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT') {
+        e.preventDefault();
+        inputRef.current?.focus();
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  function onSearchChange(v: string) {
+    setQuery(v);
+    if (v.trim()) navigate(`/search?q=${encodeURIComponent(v)}`, { replace: location.pathname === '/search' });
+    else if (location.pathname === '/search') navigate('/');
+  }
+
+  async function submitNewCategory() {
+    const name = newName.trim();
+    if (!name) return;
+    try {
+      const cat = await createCategory(name);
+      await refresh();
+      setAdding(false);
+      setNewName('');
+      navigate(`/category/${cat.id}`);
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Could not create category', 'err');
+    }
+  }
+
+  const sorted = [...categories].sort((a, b) => b.documentCount - a.documentCount || a.name.localeCompare(b.name));
 
   return (
-    <div style={{
-      width: 224, height: '100%',
-      background: 'var(--sidebar)',
-      borderRight: '0.5px solid var(--line)',
-      display: 'flex', flexDirection: 'column',
-      flexShrink: 0,
-    }}>
-      <div style={{
-        height: 52, display: 'flex', alignItems: 'center',
-        padding: '0 18px',
-      }}>
-        <button
-          onClick={() => navigate('/')}
-          style={{
-            background: 'transparent', border: 'none', padding: 0, cursor: 'pointer',
-            fontFamily: 'var(--font-display)',
-            fontSize: 19, color: 'var(--ink)',
-            letterSpacing: 0.2,
-          }}
-        >Stash<span style={{ color: 'var(--accent)' }}>’</span>d</button>
+    <aside className="sidebar">
+      <NavLink to="/" className="wordmark">
+        Stash’d<span className="tick">.</span>
+      </NavLink>
+      <div className="wordmark-sub">The document ledger</div>
+
+      <div className="side-search">
+        <Search size={14} />
+        <input
+          ref={inputRef}
+          value={query}
+          onChange={e => onSearchChange(e.target.value)}
+          placeholder="Search the stash…"
+          aria-label="Search documents"
+        />
+        <kbd>/</kbd>
       </div>
 
-      <div style={{ flex: 1, overflow: 'auto', padding: '2px 8px 12px' }}>
-        <SidebarItem
-          label="Inbox"
-          icon={<IconInbox size={14} />}
-          count={docs.length}
-          active={isHome}
-          onClick={() => navigate('/')}
-          badge={pendingCount > 0 ? pendingCount : null}
-        />
+      <nav className="side-section">
+        <NavLink to="/" end className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
+          <Inbox size={15} strokeWidth={1.8} />
+          Inbox
+          {inboxCount > 0 && <span className="nav-badge">{inboxCount}</span>}
+        </NavLink>
+        <NavLink to="/all" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
+          <Library size={15} strokeWidth={1.8} />
+          All documents
+          <span className="count">{docs.length}</span>
+        </NavLink>
+      </nav>
 
-        <div style={{
-          padding: '16px 9px 5px',
-          fontSize: 10, fontWeight: 700,
-          color: 'var(--ink-4)',
-          textTransform: 'uppercase', letterSpacing: 0.7,
-        }}>Categories</div>
-
-        <SidebarItem
-          label="All Documents"
-          icon={<IconFolder size={13} />}
-          count={docs.length}
-          active={activeCategory === 'all'}
-          onClick={() => navigate('/category/all')}
-        />
-        {categories.map(cat => (
-          <SidebarItem
-            key={cat.id}
-            label={cat.name}
-            dotColor={cat.color}
-            count={cat.documentCount}
-            active={activeCategory === cat.id}
-            onClick={() => navigate(`/category/${encodeURIComponent(cat.id)}`)}
+      <div className="side-section">
+        <div className="side-label side-label-row">
+          The Cabinet
+          <button
+            className="side-add"
+            aria-label="Add category"
+            title="Add category"
+            onClick={() => setAdding(a => !a)}
+          >
+            <Plus size={13} />
+          </button>
+        </div>
+        {adding && (
+          <input
+            className="side-add-input"
+            autoFocus
+            value={newName}
+            placeholder="New drawer name…"
+            aria-label="New category name"
+            onChange={e => setNewName(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter') submitNewCategory();
+              if (e.key === 'Escape') {
+                setAdding(false);
+                setNewName('');
+              }
+            }}
           />
-        ))}
+        )}
+        {sorted.map(cat => {
+          const Icon = categoryIcon(cat.icon);
+          return (
+            <NavLink
+              key={cat.id}
+              to={`/category/${cat.id}`}
+              className={({ isActive }) =>
+                `nav-item${isActive ? ' active' : ''}${dropTarget === cat.id ? ' drop-hover' : ''}`
+              }
+              onDragOver={e => {
+                if (e.dataTransfer.types.includes(DRAG_MIME)) {
+                  e.preventDefault();
+                  setDropTarget(cat.id);
+                }
+              }}
+              onDragLeave={() => setDropTarget(t => (t === cat.id ? null : t))}
+              onDrop={e => onDropDocs(e, cat.id)}
+            >
+              <Icon size={15} strokeWidth={1.8} style={{ color: cat.color }} />
+              {cat.name}
+              <span className="count">{cat.documentCount}</span>
+            </NavLink>
+          );
+        })}
       </div>
 
-      <div style={{
-        padding: '10px 16px',
-        borderTop: '0.5px solid var(--line)',
-        display: 'flex', alignItems: 'center', gap: 7,
-        fontSize: 10.5, color: 'var(--ink-3)',
-      }}>
-        <span style={{
-          width: 6, height: 6, borderRadius: '50%',
-          background: 'var(--green)',
-          boxShadow: '0 0 0 2px rgba(22,163,74,0.18)',
-        }} />
-        <span style={{ flex: 1, letterSpacing: -0.05 }}>Gemma · Local</span>
-        <span style={{ color: 'var(--ink-4)' }}>Online</span>
+      <div className="side-foot">
+        <span className="dot" />
+        local-first
+        <br />
+        every page stays on this machine
       </div>
-    </div>
+    </aside>
   );
 }

@@ -1,30 +1,35 @@
 import { readFile } from 'fs/promises';
 import { basename } from 'path';
-import pdfParse from 'pdf-parse';
 import { Category, ClassificationResult, DocumentInput } from '@stashd/shared';
 import { ModelProvider } from '../providers/ModelProvider';
+import { extractPdfText, truncateText } from './textExtraction';
+
+export interface ClassifyOutcome {
+  classification: ClassificationResult;
+  // Searchable text: pdf-parse output for PDFs, model transcription for images.
+  extractedText?: string;
+}
 
 export class ClassificationService {
   constructor(private readonly provider: ModelProvider) {}
 
-  async classify(filePath: string, mimeType: string, existingCategories: Category[]): Promise<ClassificationResult> {
+  async classify(filePath: string, mimeType: string, existingCategories: Category[]): Promise<ClassifyOutcome> {
     const input = await this.buildInput(filePath, mimeType);
-    return this.provider.classify(input, existingCategories);
+    const classification = await this.provider.classify(input, existingCategories);
+    const extractedText = input.isImage
+      ? classification.transcription && truncateText(classification.transcription)
+      : input.content && input.content !== '(Could not extract PDF text)'
+        ? truncateText(input.content)
+        : undefined;
+    return { classification, extractedText: extractedText || undefined };
   }
 
   private async buildInput(filePath: string, mimeType: string): Promise<DocumentInput> {
     const filename = basename(filePath);
 
     if (mimeType === 'application/pdf') {
-      const buffer = await readFile(filePath);
-      let text = '';
-      try {
-        const result = await pdfParse(buffer);
-        text = result.text;
-      } catch {
-        text = '(Could not extract PDF text)';
-      }
-      return { filename, mimeType, content: text, isImage: false };
+      const text = await extractPdfText(filePath);
+      return { filename, mimeType, content: text ?? '(Could not extract PDF text)', isImage: false };
     }
 
     if (mimeType === 'image/heic' || mimeType === 'image/heif') {

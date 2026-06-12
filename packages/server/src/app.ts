@@ -5,6 +5,7 @@ import { FileService } from './services/FileService';
 import { ClassificationService } from './services/ClassificationService';
 import { getProvider } from './providers';
 import { createDocumentRoutes } from './routes/documents';
+import { backfillExtractedText } from './services/textExtraction';
 import { createCategoryRoutes } from './routes/categories';
 
 interface AppOverrides {
@@ -17,6 +18,12 @@ export async function createApp(dataDir: string, overrides: AppOverrides = {}): 
 
   const fileService = new FileService(dataDir);
   await fileService.ensureDirs();
+
+  // Catch up documents filed before extractedText existed; runs in the
+  // background so startup isn't blocked by a large stash.
+  void backfillExtractedText(manifestService, fileService).catch((err: unknown) => {
+    console.warn('Text backfill failed:', (err as Error).message);
+  });
 
   const provider = getProvider(process.env.PROVIDER ?? 'ollama');
   const classificationService = overrides.classificationService ?? new ClassificationService(provider);

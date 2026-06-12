@@ -1,4 +1,4 @@
-import { mkdir, readdir, rename, rmdir, stat, unlink } from 'fs/promises';
+import { mkdir, readdir, readFile, rename, rmdir, stat, unlink, writeFile } from 'fs/promises';
 import { extname, join } from 'path';
 
 export class FileService {
@@ -28,6 +28,29 @@ export class FileService {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
       throw err;
     }
+  }
+
+  // Sidecar holding text extracted at classify time, so it survives a server
+  // restart until the job is filed. Lives beside (not inside) the job dir so
+  // getTempFilePath never mistakes it for the uploaded document.
+  private jobTextPath(jobId: string): string {
+    return join(this.dataDir, 'temp', `${jobId}.extracted.txt`);
+  }
+
+  async saveJobText(jobId: string, text: string): Promise<void> {
+    await writeFile(this.jobTextPath(jobId), text, 'utf-8');
+  }
+
+  async readJobText(jobId: string): Promise<string | undefined> {
+    try {
+      return await readFile(this.jobTextPath(jobId), 'utf-8');
+    } catch {
+      return undefined;
+    }
+  }
+
+  async deleteJobText(jobId: string): Promise<void> {
+    await unlink(this.jobTextPath(jobId)).catch(() => {});
   }
 
   async moveToDocuments(

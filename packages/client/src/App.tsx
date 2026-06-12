@@ -1,77 +1,44 @@
-import { useEffect, useState } from 'react';
-import { Routes, Route, Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { AppProvider, useApp } from './state';
-import { Toolbar, PrimaryButton, SearchField } from './components/chrome';
-import { IconPlus } from './components/icons';
+import { useEffect } from 'react';
+import { Route, Routes, useLocation } from 'react-router-dom';
+import { StoreProvider } from './store';
 import Sidebar from './components/Sidebar';
-import Dashboard from './pages/Dashboard';
+import { GlobalDropCurtain } from './components/DropZone';
+import ReviewSheet from './components/ReviewSheet';
+import Toasts from './components/Toasts';
+import InboxPage from './pages/InboxPage';
+import AllDocsPage from './pages/AllDocsPage';
 import CategoryPage from './pages/CategoryPage';
-import DocumentDetail from './pages/DocumentDetail';
+import DocumentPage from './pages/DocumentPage';
 import SearchPage from './pages/SearchPage';
 
-function Layout() {
-  const navigate = useNavigate();
-  const location = useLocation();
-  const { filePickerRef } = useApp();
-  const [search, setSearch] = useState('');
-
-  // On the dashboard the picker is live — open it directly. Anywhere else,
-  // navigate home and let UploadZone open it on arrival.
-  function handleAdd() {
-    if (filePickerRef.current) {
-      filePickerRef.current();
-    } else {
-      navigate('/', { state: { openPicker: true } });
-    }
-  }
-
-  // Clear the search box when leaving the search page.
+function ScrollReset() {
+  const { pathname } = useLocation();
   useEffect(() => {
-    if (!location.pathname.startsWith('/search')) setSearch('');
-  }, [location.pathname]);
-
-  return (
-    <div style={{
-      width: '100vw', height: '100vh',
-      overflow: 'hidden',
-      background: 'var(--bg)',
-      display: 'flex',
-    }}>
-      <Sidebar />
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-        <Toolbar
-          center={
-            <SearchField
-              value={search}
-              onChange={setSearch}
-              onSubmit={(q) => navigate(`/search?q=${encodeURIComponent(q)}`)}
-            />
-          }
-          right={
-            <PrimaryButton onClick={handleAdd}>
-              <IconPlus size={14} />Add
-            </PrimaryButton>
-          }
-        />
-        <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
-          <Outlet />
-        </div>
-      </div>
-    </div>
-  );
+    document.querySelector('.main')?.scrollTo(0, 0);
+  }, [pathname]);
+  return null;
 }
 
 export default function App() {
   return (
-    <AppProvider>
-      <Routes>
-        <Route element={<Layout />}>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/category/:id" element={<CategoryPage />} />
-          <Route path="/document/:id" element={<DocumentDetail />} />
-          <Route path="/search" element={<SearchPage />} />
-        </Route>
-      </Routes>
-    </AppProvider>
+    <StoreProvider>
+      <div className="shell">
+        <Sidebar />
+        <main className="main">
+          <ScrollReset />
+          <Routes>
+            <Route path="/" element={<InboxPage />} />
+            <Route path="/all" element={<AllDocsPage />} />
+            <Route path="/category/:id" element={<CategoryPage />} />
+            <Route path="/doc/:id" element={<DocumentPage />} />
+            <Route path="/search" element={<SearchPage />} />
+            <Route path="*" element={<InboxPage />} />
+          </Routes>
+        </main>
+      </div>
+      <GlobalDropCurtain />
+      <ReviewSheet />
+      <Toasts />
+    </StoreProvider>
   );
 }

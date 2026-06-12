@@ -19,8 +19,18 @@ export interface Document {
   confidenceScore: number;
   status: "pending" | "filed";
   notes?: string;
+  // Full text pulled from the document at filing time (pdf-parse for PDFs,
+  // model transcription for images). Capped, and absent for older documents
+  // until backfilled.
+  extractedText?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+// A search result: a document plus the fragment of text that matched the
+// query. Computed per-request, never persisted.
+export interface SearchHit extends Document {
+  snippet?: string;
 }
 
 export interface Category {
@@ -48,6 +58,8 @@ export interface ClassificationResult {
   vendor?: string;
   parties: string[];
   confidence: number;
+  // For images: the document's visible text, transcribed by the model.
+  transcription?: string;
 }
 
 export type ProcessingStage = "extracting" | "classifying" | "complete" | "error";

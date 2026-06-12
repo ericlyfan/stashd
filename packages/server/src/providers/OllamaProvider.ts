@@ -18,7 +18,8 @@ function buildSystemPrompt(categories: Category[]): string {
   "amount": optional number if a monetary amount is present,
   "vendor": optional string for the business or vendor name,
   "parties": array of person or organization names involved,
-  "confidence": number 0-1 representing your confidence
+  "confidence": number 0-1 representing your confidence,
+  "transcription": for document images only — the full text visible in the document, transcribed verbatim; omit for non-image documents
 }
 
 Existing categories:
@@ -59,7 +60,9 @@ export class OllamaProvider implements ModelProvider {
     }
 
     const data = (await res.json()) as { response: string };
-    const parsed = JSON.parse(data.response) as Partial<ClassificationResult>;
+    // Some models wrap the JSON in ```json fences despite the instructions.
+    const raw = data.response.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+    const parsed = JSON.parse(raw) as Partial<ClassificationResult>;
 
     return {
       category: typeof parsed.category === 'string' && parsed.category.trim()
@@ -73,6 +76,10 @@ export class OllamaProvider implements ModelProvider {
       vendor: parsed.vendor,
       parties: Array.isArray(parsed.parties) ? parsed.parties : [],
       confidence: typeof parsed.confidence === 'number' ? Math.max(0, Math.min(1, parsed.confidence)) : 0.5,
+      transcription:
+        typeof parsed.transcription === 'string' && parsed.transcription.trim()
+          ? parsed.transcription
+          : undefined,
     };
   }
 }
