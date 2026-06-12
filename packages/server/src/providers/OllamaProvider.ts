@@ -25,7 +25,7 @@ function buildSystemPrompt(categories: Category[]): string {
 Existing categories:
 ${list}
 
-Category rules: If an existing category fits, return its exact id. If no existing category fits, return a new category name as a plain string slug (e.g. 'medical-health'). Do not force-fit into an existing category.
+Category rules: If an existing category fits, return its exact id. Strongly prefer reusing an existing category over inventing a near-synonym — never create a new category whose meaning overlaps one listed above (e.g. do not return 'service-quotes' if 'service-quotations' exists). Only when nothing listed could reasonably hold this document, return a new category name as a plain string slug (e.g. 'medical-health'), preferring short, generic, plural nouns.
 
 Respond ONLY with valid JSON. No markdown, no explanation.`;
 }

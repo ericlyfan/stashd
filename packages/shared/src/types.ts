@@ -23,6 +23,9 @@ export interface Document {
   // model transcription for images). Capped, and absent for older documents
   // until backfilled.
   extractedText?: string;
+  // SHA-256 of the file bytes, used for duplicate detection. Backfilled at
+  // boot for documents filed before the feature existed.
+  contentHash?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -39,6 +42,17 @@ export interface Category {
   color: string;
   icon: string;
   isCustom: boolean;
+}
+
+// Returned by POST /documents/upload. `duplicate` points at an already-filed
+// document with identical bytes — a warning, never a block.
+export interface UploadResponse {
+  jobId: string;
+  duplicate?: {
+    id: string;
+    originalName: string;
+    category: CategoryId;
+  };
 }
 
 export interface DocumentInput {

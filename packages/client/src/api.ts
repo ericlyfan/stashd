@@ -1,4 +1,6 @@
-import { Category, Document, SearchHit, SSEEvent } from '@stashd/shared';
+import { Category, Document, SearchHit, SSEEvent, UploadResponse } from '@stashd/shared';
+
+export type { UploadResponse } from '@stashd/shared';
 
 export type { SearchHit } from '@stashd/shared';
 
@@ -78,10 +80,14 @@ export function fileDocument(jobId: string, data: FilePayload): Promise<Document
   });
 }
 
-export function uploadDocument(file: File): Promise<{ jobId: string }> {
+export function discardJob(jobId: string): Promise<void> {
+  return req<void>(`/documents/job/${jobId}`, { method: 'DELETE' });
+}
+
+export function uploadDocument(file: File): Promise<UploadResponse> {
   const form = new FormData();
   form.append('file', file);
-  return req<{ jobId: string }>('/documents/upload', { method: 'POST', body: form });
+  return req<UploadResponse>('/documents/upload', { method: 'POST', body: form });
 }
 
 export interface CategoryWithCount extends Category {

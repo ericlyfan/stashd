@@ -7,10 +7,11 @@ import {
   useRef,
   useState,
 } from 'react';
-import { ClassificationResult, Document } from '@stashd/shared';
+import { ClassificationResult, Document, UploadResponse } from '@stashd/shared';
 import {
   CategoryWithCount,
   FilePayload,
+  discardJob,
   fileDocument,
   listCategories,
   listDocuments,
@@ -20,7 +21,7 @@ import {
 
 // ── Upload queue ──────────────────────────────────────────────────────────
 
-export type QueueStatus = 'uploading' | 'processing' | 'ready' | 'filing' | 'error';
+export type QueueStatus = 'queued' | 'uploading' | 'processing' | 'ready' | 'filing' | 'error';
 
 export interface QueueItem {
   id: string;
@@ -32,9 +33,15 @@ export interface QueueItem {
   stageMessage: string;
   jobId?: string;
   classification?: ClassificationResult;
+  // An already-filed document with identical bytes — warn, never block.
+  duplicateOf?: UploadResponse['duplicate'];
   error?: string;
   previewUrl: string;
 }
+
+// How many files upload + classify at once. The rest wait as "queued" so a
+// 20-file drop doesn't hammer the Ollama instance with parallel model calls.
+const MAX_CONCURRENT = 3;
 
 export interface Toast {
   id: number;
@@ -68,6 +75,7 @@ interface StoreState {
   queue: QueueItem[];
   addFiles: (files: FileList | File[]) => void;
   dismissItem: (id: string) => void;
+  dismissItems: (ids: string[]) => void;
   fileItem: (id: string, payload: FilePayload) => Promise<Document | null>;
 
   reviewItemId: string | null;
@@ -91,9 +99,11 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
 
   const sources = useRef(new Map<string, EventSource>());
-  // Mirror of reviewItemId so async callbacks can read the latest value.
+  // Mirrors so async callbacks can read the latest values.
   const reviewRef = useRef<string | null>(null);
   reviewRef.current = reviewItemId;
+  const queueRef = useRef<QueueItem[]>([]);
+  queueRef.current = queue;
 
   const notify = useCallback((text: string, kind: 'ok' | 'err' = 'ok') => {
     const id = nextToastId++;
@@ -122,6 +132,66 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     setQueue(prev => prev.map(it => (it.id === id ? { ...it, ...patch } : it)));
   }, []);
 
+  // ── Pipeline: items wait as "queued" and at most MAX_CONCURRENT are in
+  // flight (upload + classify) at any moment. ──────────────────────────────
+  const activeCount = useRef(0);
+  const waiting = useRef<{ id: string; file: File }[]>([]);
+  // begin → (on completion) pump → begin: a ref breaks the useCallback cycle.
+  const pumpRef = useRef<() => void>(() => {});
+
+  const begin = useCallback(
+    (id: string, file: File) => {
+      activeCount.current++;
+      const settle = () => {
+        activeCount.current--;
+        pumpRef.current();
+      };
+
+      patchItem(id, { status: 'uploading', stageMessage: 'Uploading…' });
+      uploadDocument(file)
+        .then(({ jobId, duplicate }) => {
+          patchItem(id, { jobId, duplicateOf: duplicate, status: 'processing', stageMessage: 'Reading document…' });
+          const es = subscribeClassify(jobId, event => {
+            if (event.stage === 'extracting' || event.stage === 'classifying') {
+              patchItem(id, { stageMessage: event.message });
+            } else if (event.stage === 'complete' && event.classification) {
+              sources.current.delete(id);
+              patchItem(id, {
+                status: 'ready',
+                stageMessage: 'Classified — ready to review',
+                classification: event.classification,
+              });
+              // Pop the review sheet open if the user isn't already in one.
+              if (reviewRef.current === null) setReviewItemId(id);
+              settle();
+            } else if (event.stage === 'error') {
+              sources.current.delete(id);
+              patchItem(id, {
+                status: 'error',
+                stageMessage: event.error ?? 'Classification failed',
+                error: event.error,
+              });
+              settle();
+            }
+          });
+          sources.current.set(id, es);
+        })
+        .catch((err: Error) => {
+          patchItem(id, { status: 'error', stageMessage: err.message, error: err.message });
+          settle();
+        });
+    },
+    [patchItem],
+  );
+
+  const pump = useCallback(() => {
+    while (activeCount.current < MAX_CONCURRENT && waiting.current.length > 0) {
+      const next = waiting.current.shift()!;
+      begin(next.id, next.file);
+    }
+  }, [begin]);
+  pumpRef.current = pump;
+
   const addFiles = useCallback(
     (files: FileList | File[]) => {
       for (const file of Array.from(files)) {
@@ -142,56 +212,42 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           name: file.name,
           size: file.size,
           mime,
-          status: 'uploading',
-          stageMessage: 'Uploading…',
+          status: 'queued',
+          stageMessage: 'Waiting…',
           previewUrl: URL.createObjectURL(file),
         };
         setQueue(prev => [...prev, item]);
-
-        uploadDocument(file)
-          .then(({ jobId }) => {
-            patchItem(id, { jobId, status: 'processing', stageMessage: 'Reading document…' });
-            const es = subscribeClassify(jobId, event => {
-              if (event.stage === 'extracting' || event.stage === 'classifying') {
-                patchItem(id, { stageMessage: event.message });
-              } else if (event.stage === 'complete' && event.classification) {
-                sources.current.delete(id);
-                patchItem(id, {
-                  status: 'ready',
-                  stageMessage: 'Classified — ready to review',
-                  classification: event.classification,
-                });
-                // Pop the review sheet open if the user isn't already in one.
-                if (reviewRef.current === null) setReviewItemId(id);
-              } else if (event.stage === 'error') {
-                sources.current.delete(id);
-                patchItem(id, {
-                  status: 'error',
-                  stageMessage: event.error ?? 'Classification failed',
-                  error: event.error,
-                });
-              }
-            });
-            sources.current.set(id, es);
-          })
-          .catch((err: Error) => {
-            patchItem(id, { status: 'error', stageMessage: err.message, error: err.message });
-          });
+        waiting.current.push({ id, file });
       }
+      pump();
     },
-    [notify, patchItem],
+    [notify, pump],
   );
 
-  const dismissItem = useCallback((id: string) => {
-    sources.current.get(id)?.close();
-    sources.current.delete(id);
+  const dismissItems = useCallback((ids: string[]) => {
+    const drop = new Set(ids);
+    waiting.current = waiting.current.filter(w => !drop.has(w.id));
+    // Clean up the server-side temp upload too — unless the item is mid-file,
+    // where the temp file has already moved into permanent storage.
+    for (const it of queueRef.current) {
+      if (drop.has(it.id) && it.jobId && it.status !== 'filing') {
+        void discardJob(it.jobId).catch(() => {});
+      }
+    }
+    for (const id of drop) {
+      sources.current.get(id)?.close();
+      sources.current.delete(id);
+    }
     setQueue(prev => {
-      const it = prev.find(q => q.id === id);
-      if (it) URL.revokeObjectURL(it.previewUrl);
-      return prev.filter(q => q.id !== id);
+      for (const it of prev) {
+        if (drop.has(it.id)) URL.revokeObjectURL(it.previewUrl);
+      }
+      return prev.filter(q => !drop.has(q.id));
     });
-    setReviewItemId(curr => (curr === id ? null : curr));
+    setReviewItemId(curr => (curr !== null && drop.has(curr) ? null : curr));
   }, []);
+
+  const dismissItem = useCallback((id: string) => dismissItems([id]), [dismissItems]);
 
   const fileItem = useCallback(
     async (id: string, payload: FilePayload): Promise<Document | null> => {
@@ -201,6 +257,9 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       try {
         const doc = await fileDocument(item.jobId, payload);
         dismissItem(id);
+        // Batch flow: move straight on to the next classified item.
+        const next = queue.find(q => q.id !== id && q.status === 'ready');
+        if (next) setReviewItemId(next.id);
         await refresh();
         return doc;
       } catch (err) {
@@ -223,13 +282,14 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       queue,
       addFiles,
       dismissItem,
+      dismissItems,
       fileItem,
       reviewItemId,
       openReview: setReviewItemId,
       toasts,
       notify,
     }),
-    [docs, categories, loading, refresh, queue, addFiles, dismissItem, fileItem, reviewItemId, toasts, notify],
+    [docs, categories, loading, refresh, queue, addFiles, dismissItem, dismissItems, fileItem, reviewItemId, toasts, notify],
   );
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;

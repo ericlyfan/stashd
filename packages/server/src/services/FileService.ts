@@ -1,5 +1,5 @@
-import { mkdir, readdir, readFile, rename, rmdir, stat, unlink, writeFile } from 'fs/promises';
-import { extname, join } from 'path';
+import { mkdir, readdir, readFile, rename, rm, rmdir, stat, unlink, writeFile } from 'fs/promises';
+import { extname, join, resolve, sep } from 'path';
 
 export class FileService {
   constructor(private readonly dataDir: string) {}
@@ -51,6 +51,20 @@ export class FileService {
 
   async deleteJobText(jobId: string): Promise<void> {
     await unlink(this.jobTextPath(jobId)).catch(() => {});
+  }
+
+  // Discard an in-flight upload: the temp dir and any extracted-text sidecar.
+  // Tolerant of both already being gone. The recursive delete is the most
+  // dangerous filesystem call in the app, so beyond the route-level jobId
+  // validation, refuse any target that doesn't resolve strictly inside temp/.
+  async removeTempDir(jobId: string): Promise<void> {
+    const tempRoot = resolve(this.dataDir, 'temp');
+    const target = resolve(this.tempDir(jobId));
+    if (!target.startsWith(tempRoot + sep) || target === tempRoot) {
+      throw new Error(`Refusing to delete outside temp dir: ${jobId}`);
+    }
+    await rm(target, { recursive: true, force: true });
+    await this.deleteJobText(jobId);
   }
 
   async moveToDocuments(

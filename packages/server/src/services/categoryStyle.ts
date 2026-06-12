@@ -20,6 +20,28 @@ const ICON_KEYWORDS: Array<[RegExp, string]> = [
   [/utility|bill|electric|water|internet/, 'receipt'],
 ];
 
+// Crude suffix-stripping stemmer, enough to make near-synonym category slugs
+// collide: quotations/quotes → quot, services/service → servic, invoices →
+// invoic. Not linguistically correct — just consistent.
+function stemToken(token: string): string {
+  if (token.length <= 3) return token;
+  const singular = token.replace(/ies$/, 'y');
+  const stripped = singular.replace(/(ations?|ions?|ings?|ments?|ers?|es|s)$/, '');
+  return (stripped.length >= 3 ? stripped : singular).replace(/e$/, '');
+}
+
+// Two slugs "look alike" when one's stemmed token set contains the other's:
+// service-quotes ≈ service-quotations (equal stems) and quotations ≈
+// service-quotations (subset). Biased toward merging — for this app a missed
+// distinction is cheaper than another near-duplicate drawer.
+export function slugsLookAlike(a: string, b: string): boolean {
+  const stems = (slug: string) => new Set(slug.split('-').filter(Boolean).map(stemToken));
+  const sa = stems(a);
+  const sb = stems(b);
+  const [small, large] = sa.size <= sb.size ? [sa, sb] : [sb, sa];
+  return [...small].every(t => large.has(t));
+}
+
 function hashSlug(slug: string): number {
   let h = 0;
   for (let i = 0; i < slug.length; i++) {

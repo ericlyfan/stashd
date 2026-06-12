@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ImageOff, Plus, Sparkles, X } from 'lucide-react';
+import { Copy, ImageOff, Plus, Sparkles, Trash2, X } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { QueueItem, useStore } from '../store';
 import { nameFromSlug, slugify } from '../lib/categoryMeta';
 import { isHeicMime } from '../lib/format';
@@ -30,7 +31,7 @@ function Preview({ item }: { item: QueueItem }) {
  * and the AI's proposed classification, fully editable, on the right.
  */
 export default function ReviewSheet() {
-  const { queue, reviewItemId, openReview, fileItem, categories, notify } = useStore();
+  const { queue, reviewItemId, openReview, fileItem, dismissItem, categories, notify } = useStore();
   const item = queue.find(q => q.id === reviewItemId);
 
   const cls = item?.classification;
@@ -92,6 +93,12 @@ export default function ReviewSheet() {
     setCreatingCat(false);
   }
 
+  function discard() {
+    if (!item) return;
+    dismissItem(item.id);
+    notify(`“${item.name}” discarded — nothing was filed`);
+  }
+
   async function submit(flagForLater: boolean) {
     if (!item) return;
     if (!category) {
@@ -139,6 +146,18 @@ export default function ReviewSheet() {
           </div>
 
           <div className="sf-body">
+            {item.duplicateOf && (
+              <div className="dup-banner">
+                <Copy size={14} strokeWidth={2} />
+                <span>
+                  This file is byte-for-byte identical to{' '}
+                  <Link to={`/doc/${item.duplicateOf.id}`} onClick={() => openReview(null)}>
+                    {item.duplicateOf.originalName}
+                  </Link>
+                  , already in the stash. You can still file it if you mean to.
+                </span>
+              </div>
+            )}
             <div className="ai-note">
               <Sparkles size={13} style={{ color: 'var(--gold)' }} />
               <span>AI classification</span>
@@ -254,6 +273,10 @@ export default function ReviewSheet() {
               File &amp; flag for later
             </button>
             <div style={{ flex: 1 }} />
+            <button className="btn btn-danger" onClick={discard} disabled={busy}>
+              <Trash2 size={14} />
+              Discard
+            </button>
             <button className="btn btn-ghost btn-sm" onClick={() => openReview(null)} aria-label="Close">
               <X size={15} />
             </button>
