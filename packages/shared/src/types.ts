@@ -133,3 +133,90 @@ export type ChatSSEEvent =
   | { type: "tool"; call: ToolCallRecord }
   | { type: "done"; message: ChatMessage }
   | { type: "error"; error: string };
+
+// ── Ledgers (project cost tracking) ──────────────────────────────────────────
+// A largely independent section: users create projects and track their costs
+// line by line, like a purpose-built spreadsheet. A line item may optionally
+// link to a document in the stash as supporting evidence — the link is kept in
+// sync from both sides.
+
+export type ProjectStatus = "active" | "archived";
+
+export interface Project {
+  id: string;
+  name: string;
+  description?: string;
+  status: ProjectStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// One tracked cost — a single row of a project's ledger. Categories and
+// vendors aren't a managed list: each item carries its own, and a project's
+// distinct values are derived for autocomplete and rollups.
+export interface LineItem {
+  id: string;
+  projectId: string;
+  category?: string;
+  vendor?: string;
+  description: string;
+  quantity?: number;
+  datePaid?: string;
+  invoiceNumber?: string;
+  amountRequested?: number;
+  amountPaid?: number; // pre-tax
+  taxAmount?: number; // GST/HST
+  totalPaid?: number;
+  status?: string;
+  notes?: string;
+  // Optional supporting document from the stash. Nulled if that document is
+  // later deleted, so the link can dangle without breaking.
+  documentId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// Per-project money rollups, computed per request — never persisted.
+export interface ProjectTotals {
+  itemCount: number;
+  requested: number;
+  paid: number; // pre-tax sum
+  tax: number;
+  total: number;
+}
+
+export interface ProjectSummary extends Project {
+  totals: ProjectTotals;
+}
+
+export interface ProjectDetail extends Project {
+  items: LineItem[];
+  totals: ProjectTotals;
+}
+
+// Fields a client may set on a line item; the server owns id / projectId /
+// timestamps. `documentId: null` explicitly clears a link.
+export interface LineItemInput {
+  category?: string;
+  vendor?: string;
+  description?: string;
+  quantity?: number;
+  datePaid?: string;
+  invoiceNumber?: string;
+  amountRequested?: number;
+  amountPaid?: number;
+  taxAmount?: number;
+  totalPaid?: number;
+  status?: string;
+  notes?: string;
+  documentId?: string | null;
+}
+
+// Where a stash document is referenced from the ledgers (the document → ledger
+// direction of the two-way link).
+export interface DocumentLink {
+  projectId: string;
+  projectName: string;
+  itemId: string;
+  description: string;
+}

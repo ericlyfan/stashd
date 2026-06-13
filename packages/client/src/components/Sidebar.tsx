@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { NavLink, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
-import { Inbox, Library, Plus, Search, Sparkles } from 'lucide-react';
+import { BookOpen, Inbox, Library, Plus, Search, Sparkles } from 'lucide-react';
 import { useStore } from '../store';
 import { batchUpdateDocuments, createCategory } from '../api';
 import { categoryIcon } from '../lib/categoryMeta';
@@ -8,7 +8,7 @@ import { categoryIcon } from '../lib/categoryMeta';
 const DRAG_MIME = 'application/x-stashd-docs';
 
 export default function Sidebar() {
-  const { categories, docs, queue, refresh, notify } = useStore();
+  const { categories, docs, projects, queue, refresh, notify } = useStore();
   const navigate = useNavigate();
   const location = useLocation();
   const [params] = useSearchParams();
@@ -39,6 +39,8 @@ export default function Sidebar() {
   }
 
   const inboxCount = queue.length + docs.filter(d => d.status === 'pending').length;
+  const activeProjects = projects.filter(p => p.status === 'active').length;
+  const onLedgers = location.pathname.startsWith('/ledger');
 
   // Keep the box in sync when arriving at /search via URL, clear elsewhere.
   useEffect(() => {
@@ -110,6 +112,11 @@ export default function Sidebar() {
           <Library size={15} strokeWidth={1.8} />
           All documents
           <span className="count">{docs.length}</span>
+        </NavLink>
+        <NavLink to="/ledgers" className={({ isActive }) => `nav-item${isActive || onLedgers ? ' active' : ''}`}>
+          <BookOpen size={15} strokeWidth={1.8} />
+          Ledgers
+          {activeProjects > 0 && <span className="count">{activeProjects}</span>}
         </NavLink>
         <NavLink to="/chat" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
           <Sparkles size={15} strokeWidth={1.8} />

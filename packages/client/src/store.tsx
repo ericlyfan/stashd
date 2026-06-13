@@ -7,7 +7,7 @@ import {
   useRef,
   useState,
 } from 'react';
-import { ClassificationResult, Document, UploadResponse } from '@stashd/shared';
+import { ClassificationResult, Document, ProjectSummary, UploadResponse } from '@stashd/shared';
 import {
   CategoryWithCount,
   FilePayload,
@@ -15,6 +15,7 @@ import {
   fileDocument,
   listCategories,
   listDocuments,
+  listProjects,
   subscribeClassify,
   uploadDocument,
 } from './api';
@@ -68,6 +69,7 @@ function mimeFromName(name: string, fallback: string): string {
 interface StoreState {
   docs: Document[];
   categories: CategoryWithCount[];
+  projects: ProjectSummary[];
   loading: boolean;
   refresh: () => Promise<void>;
   categoryById: (id?: string) => CategoryWithCount | undefined;
@@ -93,6 +95,7 @@ let nextToastId = 1;
 export function StoreProvider({ children }: { children: React.ReactNode }) {
   const [docs, setDocs] = useState<Document[]>([]);
   const [categories, setCategories] = useState<CategoryWithCount[]>([]);
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [reviewItemId, setReviewItemId] = useState<string | null>(null);
@@ -113,9 +116,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   const refresh = useCallback(async () => {
     try {
-      const [d, c] = await Promise.all([listDocuments(), listCategories()]);
+      const [d, c, p] = await Promise.all([listDocuments(), listCategories(), listProjects()]);
       setDocs(d);
       setCategories(c);
+      setProjects(p);
     } catch (err) {
       console.error('Failed to load data', err);
       notify('Could not reach the Stash’d server', 'err');
@@ -276,6 +280,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     () => ({
       docs,
       categories,
+      projects,
       loading,
       refresh,
       categoryById: (id?: string) => categories.find(c => c.id === id),
@@ -289,7 +294,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       toasts,
       notify,
     }),
-    [docs, categories, loading, refresh, queue, addFiles, dismissItem, dismissItems, fileItem, reviewItemId, toasts, notify],
+    [docs, categories, projects, loading, refresh, queue, addFiles, dismissItem, dismissItems, fileItem, reviewItemId, toasts, notify],
   );
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;

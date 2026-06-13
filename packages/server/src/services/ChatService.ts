@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
-import { CategoryId, ChatMessage, ChatSSEEvent, Citation, Document, ToolCallRecord } from '@stashd/shared';
+import { CategoryId, ChatMessage, ChatSSEEvent, Citation, Document, LineItem, ToolCallRecord } from '@stashd/shared';
 import { StoreService } from './StoreService';
 import { EmbeddingService } from './EmbeddingService';
 import { buildCustomCategory, slugifyCategory } from './categoryStyle';
@@ -79,7 +79,33 @@ const TOOLS = [
       parameters: { type: 'object', properties: {} },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'list_projects',
+      description:
+        'List the cost-tracking ledgers (projects) with their money totals. Use for questions about project spending, budgets, or what projects exist.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'read_project',
+      description:
+        "Read one project ledger in full: every line item (category, vendor, dates, amounts, status) plus totals and a breakdown by category and vendor. Use before answering detailed financial questions about a project's costs.",
+      parameters: {
+        type: 'object',
+        properties: { project: { type: 'string', description: 'The project id or name' } },
+        required: ['project'],
+      },
+    },
+  },
 ];
+
+function formatMoney(amount: number): string {
+  return amount.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+}
 
 function docCard(doc: Document): Record<string, unknown> {
   return {
@@ -161,19 +187,35 @@ export class ChatService {
       .map(c => `- ${c.id} (${c.name}, ${counts[c.id] ?? 0} docs)`)
       .join('\n');
 
+    // A lightweight roster of the cost ledgers so the model knows they exist;
+    // read_project pulls the line-item detail on demand.
+    const projects = this.store.listProjects();
+    const projectList = projects.length
+      ? projects
+          .map(
+            p =>
+              `- ${p.id} (${p.name}${p.status === 'archived' ? ', archived' : ''}): ${p.totals.itemCount} line items, ${formatMoney(p.totals.total)} total paid`,
+          )
+          .join('\n')
+      : '(no projects yet)';
+
     const sections: string[] = [
-      `You are the assistant inside Stashd, a personal document organizer. You answer questions about the user's filed documents and can act on them with your tools.
+      `You are the assistant inside Stashd, a personal document organizer with a cost-tracking section called Ledgers. You answer questions about the user's filed documents and project costs, and can act on documents with your tools.
 
 Today's date: ${new Date().toISOString().slice(0, 10)}.
 
 Rules:
 - Ground every claim about a document in its actual content (the excerpts below, pinned documents, or read_doc results). If you cannot find something, say so plainly.
 - Cite documents inline using the exact form [doc:<id>] right after the claim it supports, e.g. "the rent is $2,400 [doc:abc-123]". Always cite when you state facts from a document.
+- For money or project questions, use list_projects / read_project to get the figures rather than guessing. Refer to projects by name in your answer.
 - Use search_docs / read_doc freely to investigate. Only call update_doc when the user explicitly asks for a change.
 - Answer in plain conversational prose. Keep it concise.
 
 Category drawers:
-${categoryList}`,
+${categoryList}
+
+Cost ledgers (projects):
+${projectList}`,
     ];
 
     const pinned = pinnedDocIds
@@ -345,6 +387,66 @@ ${categoryList}`,
           return {
             result: JSON.stringify(cats),
             record: { tool: name, args, summary: 'Listed the category drawers' },
+          };
+        }
+        case 'list_projects': {
+          const projects = this.store.listProjects().map(p => ({
+            id: p.id,
+            name: p.name,
+            status: p.status,
+            ...p.totals,
+          }));
+          return {
+            result: JSON.stringify(projects),
+            record: { tool: name, args, summary: `Listed the cost ledgers — ${projects.length} project${projects.length === 1 ? '' : 's'}` },
+          };
+        }
+        case 'read_project': {
+          const key = String(args.project ?? '');
+          const detail =
+            this.store.getProjectDetail(key) ??
+            (() => {
+              // The model often passes the project name rather than its id.
+              const match = this.store.listProjects().find(p => p.name.toLowerCase() === key.toLowerCase());
+              return match ? this.store.getProjectDetail(match.id) : undefined;
+            })();
+          if (!detail) return this.toolError(name, args, 'Project not found');
+
+          const groupBy = (pick: (it: LineItem) => string | undefined) => {
+            const out: Record<string, number> = {};
+            for (const it of detail.items) {
+              const key = pick(it)?.trim() || 'Uncategorized';
+              out[key] = (out[key] ?? 0) + (it.totalPaid ?? 0);
+            }
+            return out;
+          };
+
+          return {
+            result: JSON.stringify({
+              id: detail.id,
+              name: detail.name,
+              description: detail.description,
+              status: detail.status,
+              totals: detail.totals,
+              byCategory: groupBy(it => it.category),
+              byVendor: groupBy(it => it.vendor),
+              items: detail.items.map(it => ({
+                category: it.category,
+                vendor: it.vendor,
+                description: it.description,
+                quantity: it.quantity,
+                datePaid: it.datePaid,
+                invoiceNumber: it.invoiceNumber,
+                amountRequested: it.amountRequested,
+                amountPaid: it.amountPaid,
+                taxAmount: it.taxAmount,
+                totalPaid: it.totalPaid,
+                status: it.status,
+                notes: it.notes,
+                documentId: it.documentId,
+              })),
+            }),
+            record: { tool: name, args, summary: `Read the “${detail.name}” ledger — ${detail.items.length} line item${detail.items.length === 1 ? '' : 's'}` },
           };
         }
         default:

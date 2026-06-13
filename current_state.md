@@ -63,6 +63,18 @@ A persistent chatbot (`/chat`, sidebar entry **Ask the stash**) that answers que
 
 ---
 
+## 3c. Ledgers — project cost tracking
+
+A largely independent section (sidebar entry **Ledgers**, `/ledgers`) for tracking project costs line by line — a purpose-built alternative to a cost-tracking spreadsheet. It connects to the document organizer only through optional, two-way links.
+
+**Model** (`projects` + `line_items` tables, plain SQLite — no FTS/vec): a **project** has a name, optional description, and `status: active | archived`. Each **line item** is one row of the project's ledger and captures category, vendor/contractor, description/milestone, quantity, date paid, invoice number, amount requested, amount paid (pre-tax), GST/HST, total paid, status, and notes — plus an optional `document_id`. Categories and vendors aren't a managed list: each item carries its own text, and the project page derives the distinct sets for `<datalist>` autocomplete and for the **by-category / by-vendor** cost breakdowns. Money rollups (requested / paid / tax / total) are computed per request in `StoreService.sumTotals`, never stored.
+
+**Document links are bidirectional.** A line item may link one stash document as supporting evidence (picked via the same search-popover the chat uses for pins). The document page shows a **"Cited in ledgers"** card listing every line item that references it (`GET /api/projects/by-document/:docId`). Deleting a document nulls those links inside `removeDocument`'s transaction, so they dangle harmlessly rather than break.
+
+**UI** (`pages/LedgersPage.tsx`, `pages/LedgerPage.tsx`): the index is a grid of project cards (total paid, line count, archived state) with a stats strip. A project page has the money stats strip, the by-category/by-vendor breakdown bars, and the line-item table (dense, tabular-nums, a totals `tfoot`); clicking a row opens `LineItemDialog` (all fields, with **Total paid** auto-summing from paid + tax until the user overrides it, plus the document picker). `ProjectDialog` handles create/edit. Projects ride along in the global `store` (`projects`, loaded with docs + categories in `refresh()`), so the sidebar shows an active-project count.
+
+**Chat awareness:** the system prompt now includes a roster of projects with totals, and the tool loop gains `list_projects` and `read_project` (the latter returns line items plus by-category/by-vendor breakdowns and resolves a project by id **or** name), so "Ask the stash" can answer financial questions across ledgers.
+
 ## 4. Categories ("drawers")
 
 Categories are dynamic: seeded with just **Other** (`isCustom: false`, undeletable), grown by the classifier proposing new ones, or created by the user.
@@ -112,6 +124,15 @@ Categories are dynamic: seeded with just **Other** (`isCustom: false`, undeletab
 | `GET /chat/:id` / `DELETE /chat/:id`             | conversation with messages + pins / delete it                                                                               |
 | `PUT /chat/:id/pins`                             | replace pinned-document list `{ docIds }`                                                                                   |
 | `POST /chat/:id/messages`                        | send a user message; SSE stream of `token` / `tool` / `done` / `error` events                                               |
+| `GET /projects`                                  | all projects with computed money totals                                                                                     |
+| `POST /projects`                                 | create a project `{ name, description? }`                                                                                   |
+| `GET /projects/:id`                              | project detail with line items + totals                                                                                     |
+| `PATCH /projects/:id`                            | rename / re-describe / archive (`status`)                                                                                   |
+| `DELETE /projects/:id`                           | delete project + its line items                                                                                             |
+| `POST /projects/:id/items`                       | add a line item                                                                                                             |
+| `PATCH /projects/:id/items/:itemId`              | partial-update a line item (`documentId: null` clears the link)                                                             |
+| `DELETE /projects/:id/items/:itemId`             | delete a line item                                                                                                          |
+| `GET /projects/by-document/:docId`               | line items linking a given document (the document → ledger direction)                                                       |
 
 ---
 

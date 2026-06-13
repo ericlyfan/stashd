@@ -33,6 +33,13 @@ export function formatAmount(amount?: number | null): string {
   });
 }
 
+// Like formatAmount but renders an em dash for an empty/zero cell — for the
+// dense money tables in the ledgers, where blank cells read as noise.
+export function formatCell(amount?: number | null): string {
+  if (amount === undefined || amount === null) return "—";
+  return formatAmount(amount);
+}
+
 export function isImageMime(mime: string): boolean {
   return mime.startsWith("image/");
 }

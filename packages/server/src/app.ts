@@ -10,6 +10,7 @@ import { createCategoryRoutes } from './routes/categories';
 import { EmbeddingService } from './services/EmbeddingService';
 import { ChatService } from './services/ChatService';
 import { createChatRoutes } from './routes/chat';
+import { createProjectRoutes } from './routes/projects';
 
 interface AppOverrides {
   classificationService?: ClassificationService;
@@ -50,6 +51,7 @@ export async function createApp(dataDir: string, overrides: AppOverrides = {}): 
   app.use('/api/documents', createDocumentRoutes({ store, fileService, classificationService, embeddingService }));
   app.use('/api/categories', createCategoryRoutes({ store }));
   app.use('/api/chat', createChatRoutes({ store, chatService }));
+  app.use('/api/projects', createProjectRoutes({ store }));
 
   return app;
 }

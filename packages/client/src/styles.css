@@ -2247,3 +2247,518 @@ a { color: inherit; }
   .chat-rail { display: none; }
   .chat-layout { padding: 22px 20px; }
 }
+
+/* ── Ledgers — project cost tracking ────────────────────────────────────────
+   A spreadsheet-replacing section: project cards on the index, a dense money
+   table on each project, all in the same paper-and-ink hand. */
+
+.field-opt {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: var(--ink-faint);
+  margin-left: 6px;
+}
+
+/* Project cards */
+
+.ledger-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(248px, 1fr));
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.ledger-card {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--card-raised);
+  padding: 16px 18px 14px;
+  text-decoration: none;
+  position: relative;
+  overflow: hidden;
+  transition: transform 130ms ease, box-shadow 130ms ease, border-color 130ms ease;
+}
+
+.ledger-card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: var(--wax);
+}
+
+.ledger-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-card);
+  border-color: var(--ink-3);
+}
+
+.ledger-card:hover .lc-name { color: var(--wax); }
+
+.ledger-card.archived { opacity: 0.66; }
+.ledger-card.archived::before { background: var(--ink-faint); }
+
+.lc-head { display: flex; align-items: baseline; gap: 8px; }
+
+.lc-name {
+  font-family: var(--display);
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--ink);
+  transition: color 100ms ease;
+}
+
+.lc-archived {
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  border: 1.4px solid var(--line);
+  border-radius: 4px;
+  padding: 1px 6px;
+  transform: rotate(-2deg);
+}
+
+.lc-desc {
+  margin: 7px 0 0;
+  font-size: 12.5px;
+  color: var(--ink-3);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.lc-total {
+  font-family: var(--display);
+  font-size: 25px;
+  font-weight: 560;
+  letter-spacing: -0.01em;
+  margin-top: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.lc-foot {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  color: var(--ink-3);
+}
+
+.lc-when { color: var(--ink-faint); }
+
+/* Cost breakdowns */
+
+.breakdown {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--card);
+  padding: 14px 16px 16px;
+}
+
+.breakdown-panel { margin-bottom: 18px; }
+
+.breakdown-tabs {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 13px;
+}
+
+.breakdown-tablist {
+  display: inline-flex;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.breakdown-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  background: var(--card-raised);
+  border-radius: 99px;
+  padding: 4px 13px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  cursor: pointer;
+  transition: background 110ms ease, border-color 110ms ease, color 110ms ease;
+}
+
+.breakdown-tab:hover { border-color: var(--ink-3); color: var(--ink-2); }
+
+.breakdown-tab.active {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--card-raised);
+}
+
+.breakdown-total {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Segmented proportion bar — the whole project split by share, slice colors. */
+.breakdown-stack {
+  display: flex;
+  height: 8px;
+  border-radius: 99px;
+  overflow: hidden;
+  background: rgba(28, 24, 20, 0.06);
+  margin-bottom: 14px;
+}
+
+.breakdown-seg { height: 100%; min-width: 1px; }
+.breakdown-seg + .breakdown-seg { box-shadow: inset 1px 0 0 var(--card); }
+
+.breakdown-rows { display: flex; flex-direction: column; gap: 7px; }
+
+.breakdown-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 4px 8px;
+}
+
+/* A faint full-row tint sized to the slice's share, sitting behind the text. */
+.breakdown-bar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  border-radius: 5px;
+  z-index: 0;
+}
+
+.breakdown-dot {
+  position: relative;
+  z-index: 1;
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  box-shadow: inset 0 0 0 1px rgba(28, 24, 20, 0.14);
+}
+
+.breakdown-label {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--ink-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.breakdown-amount {
+  position: relative;
+  z-index: 1;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.breakdown-pct {
+  position: relative;
+  z-index: 1;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+  min-width: 34px;
+  text-align: right;
+}
+
+/* Project stat tiles get a colored top stripe so the four figures read apart. */
+.ledger-stats .stat { position: relative; }
+
+.ledger-stats .stat::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: var(--accent, var(--ink-3));
+}
+
+/* The ledger table */
+
+.li-table-wrap {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--card);
+  overflow-x: auto;
+}
+
+.li-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  min-width: 920px;
+}
+
+.li-table thead th {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  text-align: left;
+  padding: 11px 14px;
+  background: var(--paper-deep);
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.li-table td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line-soft);
+  vertical-align: top;
+  color: var(--ink-2);
+}
+
+.li-table tbody tr {
+  cursor: pointer;
+  transition: background 100ms ease;
+}
+
+.li-table tbody tr:hover { background: rgba(28, 24, 20, 0.035); }
+.li-table tbody tr:focus-visible { outline: 2px solid var(--wax); outline-offset: -2px; }
+
+.li-table .num-col {
+  text-align: right;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.li-total-cell { font-weight: 600; color: var(--ink); }
+
+.li-empty { color: var(--ink-faint); }
+
+.li-desc-cell { color: var(--ink); font-weight: 500; min-width: 200px; }
+
+.li-clip {
+  display: inline-flex;
+  vertical-align: -2px;
+  margin-right: 6px;
+  color: var(--wax);
+}
+
+.li-clip:hover { color: var(--wax-deep); }
+
+.li-status-chip {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
+  background: rgba(28, 24, 20, 0.06);
+  border-radius: 5px;
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+
+/* Divider between category groups. A 2px rule (wider than the 1px row
+   separators) reliably wins the border-collapse conflict so it's actually
+   visible, and the extra top padding opens a clear gap above each new group. */
+.li-table tbody tr.li-group-start td {
+  border-top: 2px solid var(--ink-faint);
+  padding-top: 22px;
+}
+
+.li-table tfoot td {
+  padding: 11px 14px;
+  border-top: 2px solid var(--line);
+  background: var(--paper-deep);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.li-table tfoot td:first-child {
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.li-table tfoot .num-col { text-align: right; }
+
+/* Line-item editor dialog */
+
+.dialog-line-item {
+  width: min(580px, 100%);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 56px);
+}
+
+.li-dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 24px 14px;
+  border-bottom: 3px double var(--line);
+}
+
+.li-dialog-head h3 {
+  font-family: var(--display);
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.li-x {
+  border: 0;
+  background: none;
+  color: var(--ink-3);
+  cursor: pointer;
+  display: inline-flex;
+  padding: 4px;
+  border-radius: 6px;
+}
+
+.li-x:hover { color: var(--wax); background: var(--wax-soft); }
+
+.li-dialog-body { padding: 18px 24px; overflow-y: auto; }
+
+.li-money {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.li-auto {
+  font-family: var(--mono);
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--moss);
+  background: var(--moss-soft);
+  border-radius: 4px;
+  padding: 1px 5px;
+  margin-left: 7px;
+  vertical-align: 1px;
+}
+
+.li-doc-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--card-raised);
+  border: 1px solid var(--line);
+  border-radius: 99px;
+  padding: 5px 6px 5px 12px;
+  font-size: 12.5px;
+  color: var(--ink-2);
+  max-width: 100%;
+}
+
+.li-doc-link svg { color: var(--wax); flex-shrink: 0; }
+.li-doc-link.dangling { color: var(--ink-3); }
+.li-doc-link.dangling svg { color: var(--ink-faint); }
+
+.li-doc-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.li-doc-link button {
+  border: 0;
+  background: none;
+  padding: 3px;
+  display: inline-flex;
+  border-radius: 50%;
+  color: var(--ink-faint);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.li-doc-link button:hover { color: var(--wax); background: var(--wax-soft); }
+
+.li-doc-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 12px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-faint);
+}
+
+.li-doc-hint svg { flex-shrink: 0; }
+
+.li-dialog-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 24px;
+  border-top: 1px solid var(--line);
+  background: var(--paper-deep);
+}
+
+/* Document page → ledger back-links */
+
+.doc-ledger-links { display: flex; flex-direction: column; gap: 8px; }
+
+.doc-ledger-link {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  text-decoration: none;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  padding: 9px 12px;
+  background: var(--card-raised);
+  transition: border-color 100ms ease, transform 100ms ease;
+}
+
+.doc-ledger-link:hover { border-color: var(--wax); transform: translateY(-1px); }
+
+.dll-project {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--wax);
+}
+
+.dll-item { font-size: 13px; color: var(--ink-2); }
+
+@media (max-width: 560px) {
+  .li-money { grid-template-columns: 1fr; }
+  .field-row { grid-template-columns: 1fr; }
+}

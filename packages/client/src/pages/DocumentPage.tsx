@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Download, FileQuestion, FlagOff, Trash2 } from 'lucide-react';
-import { Document } from '@stashd/shared';
-import { deleteDocument, fileUrl, getDocument, updateDocument } from '../api';
+import { ArrowLeft, BookOpen, Download, FileQuestion, FlagOff, Trash2 } from 'lucide-react';
+import { Document, DocumentLink } from '@stashd/shared';
+import { deleteDocument, fileUrl, getDocument, getDocumentLinks, updateDocument } from '../api';
 import { useStore } from '../store';
 import Viewer from '../components/Viewer';
 import TagEditor from '../components/TagEditor';
@@ -18,6 +18,7 @@ export default function DocumentPage() {
 
   const [doc, setDoc] = useState<Document | null>(null);
   const [missing, setMissing] = useState(false);
+  const [ledgerLinks, setLedgerLinks] = useState<DocumentLink[]>([]);
 
   // Editable fields
   const [category, setCategory] = useState('');
@@ -40,6 +41,9 @@ export default function DocumentPage() {
         setNotes(d.notes ?? '');
       })
       .catch(() => !cancelled && setMissing(true));
+    getDocumentLinks(id)
+      .then(links => !cancelled && setLedgerLinks(links))
+      .catch(() => undefined);
     return () => {
       cancelled = true;
     };
@@ -258,6 +262,23 @@ export default function DocumentPage() {
               <dd>{formatDate(doc.updatedAt)}</dd>
             </dl>
           </div>
+
+          {ledgerLinks.length > 0 && (
+            <div className="meta-card">
+              <div className="field-label" style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 12 }}>
+                <BookOpen size={12} />
+                Cited in ledgers
+              </div>
+              <div className="doc-ledger-links">
+                {ledgerLinks.map(link => (
+                  <Link key={link.itemId} to={`/ledger/${link.projectId}`} className="doc-ledger-link">
+                    <span className="dll-project">{link.projectName}</span>
+                    <span className="dll-item">{link.description || 'Untitled line item'}</span>
+                  </Link>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 

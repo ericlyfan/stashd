@@ -4,10 +4,17 @@ import {
   Conversation,
   ConversationDetail,
   Document,
+  DocumentLink,
+  LineItem,
+  LineItemInput,
+  ProjectDetail,
+  ProjectSummary,
   SearchHit,
   SSEEvent,
   UploadResponse,
 } from '@stashd/shared';
+
+export type { ProjectSummary, ProjectDetail, LineItem, LineItemInput, DocumentLink } from '@stashd/shared';
 
 export type { UploadResponse } from '@stashd/shared';
 
@@ -203,6 +210,63 @@ export async function sendChatMessage(
       }
     }
   }
+}
+
+// ── Ledgers (projects + line items) ──────────────────────────────────────────
+
+export function listProjects(): Promise<ProjectSummary[]> {
+  return req<ProjectSummary[]>('/projects');
+}
+
+export function createProject(name: string, description?: string): Promise<ProjectSummary> {
+  return req<ProjectSummary>('/projects', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, description }),
+  });
+}
+
+export function getProject(id: string): Promise<ProjectDetail> {
+  return req<ProjectDetail>(`/projects/${id}`);
+}
+
+export function updateProject(
+  id: string,
+  updates: { name?: string; description?: string; status?: 'active' | 'archived' },
+): Promise<ProjectSummary> {
+  return req<ProjectSummary>(`/projects/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates),
+  });
+}
+
+export function deleteProject(id: string): Promise<void> {
+  return req<void>(`/projects/${id}`, { method: 'DELETE' });
+}
+
+export function addLineItem(projectId: string, input: LineItemInput): Promise<LineItem> {
+  return req<LineItem>(`/projects/${projectId}/items`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateLineItem(projectId: string, itemId: string, input: LineItemInput): Promise<LineItem> {
+  return req<LineItem>(`/projects/${projectId}/items/${itemId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteLineItem(projectId: string, itemId: string): Promise<void> {
+  return req<void>(`/projects/${projectId}/items/${itemId}`, { method: 'DELETE' });
+}
+
+export function getDocumentLinks(docId: string): Promise<DocumentLink[]> {
+  return req<DocumentLink[]>(`/projects/by-document/${docId}`);
 }
 
 export function subscribeClassify(jobId: string, onEvent: (event: SSEEvent) => void): EventSource {

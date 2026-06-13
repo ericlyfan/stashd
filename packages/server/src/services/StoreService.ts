@@ -10,6 +10,14 @@ import {
   Conversation,
   ConversationDetail,
   ChatMessage,
+  Project,
+  ProjectStatus,
+  ProjectSummary,
+  ProjectDetail,
+  ProjectTotals,
+  LineItem,
+  LineItemInput,
+  DocumentLink,
 } from '@stashd/shared';
 
 // Markers FTS5 snippet() wraps matches in; stripped before the snippet is
@@ -81,6 +89,81 @@ function rowToDocument(row: DocumentRow): Document {
 
 function rowToCategory(row: CategoryRow): Category {
   return { id: row.id, name: row.name, color: row.color, icon: row.icon, isCustom: row.is_custom === 1 };
+}
+
+interface ProjectRow {
+  id: string;
+  name: string;
+  description: string | null;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+interface LineItemRow {
+  id: string;
+  project_id: string;
+  category: string | null;
+  vendor: string | null;
+  description: string;
+  quantity: number | null;
+  date_paid: string | null;
+  invoice_number: string | null;
+  amount_requested: number | null;
+  amount_paid: number | null;
+  tax_amount: number | null;
+  total_paid: number | null;
+  status: string | null;
+  notes: string | null;
+  document_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+function rowToProject(row: ProjectRow): Project {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description ?? undefined,
+    status: row.status as ProjectStatus,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function rowToLineItem(row: LineItemRow): LineItem {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    category: row.category ?? undefined,
+    vendor: row.vendor ?? undefined,
+    description: row.description,
+    quantity: row.quantity ?? undefined,
+    datePaid: row.date_paid ?? undefined,
+    invoiceNumber: row.invoice_number ?? undefined,
+    amountRequested: row.amount_requested ?? undefined,
+    amountPaid: row.amount_paid ?? undefined,
+    taxAmount: row.tax_amount ?? undefined,
+    totalPaid: row.total_paid ?? undefined,
+    status: row.status ?? undefined,
+    notes: row.notes ?? undefined,
+    documentId: row.document_id ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function sumTotals(items: LineItem[]): ProjectTotals {
+  return items.reduce<ProjectTotals>(
+    (acc, it) => ({
+      itemCount: acc.itemCount + 1,
+      requested: acc.requested + (it.amountRequested ?? 0),
+      paid: acc.paid + (it.amountPaid ?? 0),
+      tax: acc.tax + (it.taxAmount ?? 0),
+      total: acc.total + (it.totalPaid ?? 0),
+    }),
+    { itemCount: 0, requested: 0, paid: 0, tax: 0, total: 0 },
+  );
 }
 
 // Turn free-typed user input into an FTS5 MATCH expression: each word becomes
@@ -212,6 +295,39 @@ export class StoreService {
         doc_id TEXT NOT NULL,
         PRIMARY KEY (conversation_id, doc_id)
       );
+
+      -- Ledgers: cost-tracking projects and their line items. Largely
+      -- independent of documents; document_id is a nullable, advisory link.
+      CREATE TABLE IF NOT EXISTS projects (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS line_items (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        category TEXT,
+        vendor TEXT,
+        description TEXT NOT NULL DEFAULT '',
+        quantity REAL,
+        date_paid TEXT,
+        invoice_number TEXT,
+        amount_requested REAL,
+        amount_paid REAL,
+        tax_amount REAL,
+        total_paid REAL,
+        status TEXT,
+        notes TEXT,
+        document_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_line_items_project ON line_items(project_id);
+      CREATE INDEX IF NOT EXISTS idx_line_items_document ON line_items(document_id);
     `);
   }
 
@@ -327,7 +443,13 @@ export class StoreService {
   }
 
   removeDocument(id: string): boolean {
-    return this.db.prepare('DELETE FROM documents WHERE id = ?').run(id).changes > 0;
+    const run = this.db.transaction(() => {
+      // Drop any ledger line-item links so they dangle harmlessly rather than
+      // pointing at a deleted document.
+      this.db.prepare('UPDATE line_items SET document_id = NULL WHERE document_id = ?').run(id);
+      return this.db.prepare('DELETE FROM documents WHERE id = ?').run(id).changes > 0;
+    });
+    return run();
   }
 
   // ── Categories ──────────────────────────────────────────────────────────
@@ -589,5 +711,173 @@ export class StoreService {
       for (const docId of docIds) insert.run(conversationId, docId);
     });
     run();
+  }
+
+  // ── Projects & line items (ledgers) ───────────────────────────────────────
+
+  listProjects(): ProjectSummary[] {
+    const rows = this.db.prepare('SELECT * FROM projects ORDER BY updated_at DESC').all() as ProjectRow[];
+    return rows.map(row => {
+      const project = rowToProject(row);
+      return { ...project, totals: sumTotals(this.getLineItems(project.id)) };
+    });
+  }
+
+  getProject(id: string): Project | undefined {
+    const row = this.db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as ProjectRow | undefined;
+    return row ? rowToProject(row) : undefined;
+  }
+
+  getProjectDetail(id: string): ProjectDetail | undefined {
+    const project = this.getProject(id);
+    if (!project) return undefined;
+    const items = this.getLineItems(id);
+    return { ...project, items, totals: sumTotals(items) };
+  }
+
+  addProject(project: Project): void {
+    this.db
+      .prepare(`
+        INSERT INTO projects (id, name, description, status, created_at, updated_at)
+        VALUES (@id, @name, @description, @status, @createdAt, @updatedAt)
+      `)
+      .run({ ...project, description: project.description ?? null });
+  }
+
+  updateProject(
+    id: string,
+    updates: Partial<Pick<Project, 'name' | 'description' | 'status' | 'updatedAt'>>,
+  ): Project | undefined {
+    const existing = this.getProject(id);
+    if (!existing) return undefined;
+    const merged = { ...existing, ...updates };
+    this.db
+      .prepare('UPDATE projects SET name = ?, description = ?, status = ?, updated_at = ? WHERE id = ?')
+      .run(merged.name, merged.description ?? null, merged.status, merged.updatedAt, id);
+    return merged;
+  }
+
+  removeProject(id: string): boolean {
+    const run = this.db.transaction(() => {
+      this.db.prepare('DELETE FROM line_items WHERE project_id = ?').run(id);
+      return this.db.prepare('DELETE FROM projects WHERE id = ?').run(id).changes > 0;
+    });
+    return run();
+  }
+
+  getLineItems(projectId: string): LineItem[] {
+    const rows = this.db
+      .prepare('SELECT * FROM line_items WHERE project_id = ? ORDER BY rowid')
+      .all(projectId) as LineItemRow[];
+    return rows.map(rowToLineItem);
+  }
+
+  getLineItem(id: string): LineItem | undefined {
+    const row = this.db.prepare('SELECT * FROM line_items WHERE id = ?').get(id) as LineItemRow | undefined;
+    return row ? rowToLineItem(row) : undefined;
+  }
+
+  addLineItem(item: LineItem): void {
+    this.db
+      .prepare(`
+        INSERT INTO line_items (
+          id, project_id, category, vendor, description, quantity, date_paid,
+          invoice_number, amount_requested, amount_paid, tax_amount, total_paid,
+          status, notes, document_id, created_at, updated_at
+        ) VALUES (
+          @id, @projectId, @category, @vendor, @description, @quantity, @datePaid,
+          @invoiceNumber, @amountRequested, @amountPaid, @taxAmount, @totalPaid,
+          @status, @notes, @documentId, @createdAt, @updatedAt
+        )
+      `)
+      .run({
+        ...item,
+        category: item.category ?? null,
+        vendor: item.vendor ?? null,
+        quantity: item.quantity ?? null,
+        datePaid: item.datePaid ?? null,
+        invoiceNumber: item.invoiceNumber ?? null,
+        amountRequested: item.amountRequested ?? null,
+        amountPaid: item.amountPaid ?? null,
+        taxAmount: item.taxAmount ?? null,
+        totalPaid: item.totalPaid ?? null,
+        status: item.status ?? null,
+        notes: item.notes ?? null,
+        documentId: item.documentId ?? null,
+      });
+  }
+
+  // Patches only the fields present in `updates`; `documentId: null` clears the
+  // link. projectId and timestamps are caller-controlled.
+  updateLineItem(id: string, updates: LineItemInput & { updatedAt: string }): LineItem | undefined {
+    const existing = this.getLineItem(id);
+    if (!existing) return undefined;
+    const has = (k: keyof LineItemInput) => Object.prototype.hasOwnProperty.call(updates, k);
+    const merged: LineItem = {
+      ...existing,
+      ...(has('category') && { category: updates.category }),
+      ...(has('vendor') && { vendor: updates.vendor }),
+      ...(has('description') && { description: updates.description ?? '' }),
+      ...(has('quantity') && { quantity: updates.quantity }),
+      ...(has('datePaid') && { datePaid: updates.datePaid }),
+      ...(has('invoiceNumber') && { invoiceNumber: updates.invoiceNumber }),
+      ...(has('amountRequested') && { amountRequested: updates.amountRequested }),
+      ...(has('amountPaid') && { amountPaid: updates.amountPaid }),
+      ...(has('taxAmount') && { taxAmount: updates.taxAmount }),
+      ...(has('totalPaid') && { totalPaid: updates.totalPaid }),
+      ...(has('status') && { status: updates.status }),
+      ...(has('notes') && { notes: updates.notes }),
+      ...(has('documentId') && { documentId: updates.documentId ?? undefined }),
+      updatedAt: updates.updatedAt,
+    };
+    this.db
+      .prepare(`
+        UPDATE line_items SET
+          category = ?, vendor = ?, description = ?, quantity = ?, date_paid = ?,
+          invoice_number = ?, amount_requested = ?, amount_paid = ?, tax_amount = ?,
+          total_paid = ?, status = ?, notes = ?, document_id = ?, updated_at = ?
+        WHERE id = ?
+      `)
+      .run(
+        merged.category ?? null,
+        merged.vendor ?? null,
+        merged.description,
+        merged.quantity ?? null,
+        merged.datePaid ?? null,
+        merged.invoiceNumber ?? null,
+        merged.amountRequested ?? null,
+        merged.amountPaid ?? null,
+        merged.taxAmount ?? null,
+        merged.totalPaid ?? null,
+        merged.status ?? null,
+        merged.notes ?? null,
+        merged.documentId ?? null,
+        merged.updatedAt,
+        id,
+      );
+    return merged;
+  }
+
+  removeLineItem(id: string): boolean {
+    return this.db.prepare('DELETE FROM line_items WHERE id = ?').run(id).changes > 0;
+  }
+
+  // The document → ledger direction: every line item referencing this document.
+  getDocumentLinks(docId: string): DocumentLink[] {
+    const rows = this.db
+      .prepare(`
+        SELECT li.id AS itemId, li.description AS description, p.id AS projectId, p.name AS projectName
+        FROM line_items li
+        JOIN projects p ON p.id = li.project_id
+        WHERE li.document_id = ?
+        ORDER BY p.name, li.rowid
+      `)
+      .all(docId) as { itemId: string; description: string; projectId: string; projectName: string }[];
+    return rows.map(r => ({
+      projectId: r.projectId,
+      projectName: r.projectName,
+      itemId: r.itemId,
+      description: r.description,
+    }));
   }
 }
