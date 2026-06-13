@@ -10,6 +10,7 @@ import AllDocsPage from './pages/AllDocsPage';
 import CategoryPage from './pages/CategoryPage';
 import DocumentPage from './pages/DocumentPage';
 import SearchPage from './pages/SearchPage';
+import ChatPage from './pages/ChatPage';
 
 function ScrollReset() {
   const { pathname } = useLocation();
@@ -32,6 +33,8 @@ export default function App() {
             <Route path="/category/:id" element={<CategoryPage />} />
             <Route path="/doc/:id" element={<DocumentPage />} />
             <Route path="/search" element={<SearchPage />} />
+            <Route path="/chat" element={<ChatPage />} />
+            <Route path="/chat/:id" element={<ChatPage />} />
             <Route path="*" element={<InboxPage />} />
           </Routes>
         </main>

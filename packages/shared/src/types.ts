@@ -84,3 +84,52 @@ export interface SSEEvent {
   classification?: ClassificationResult;
   error?: string;
 }
+
+// ── Chat / RAG ──────────────────────────────────────────────────────────────
+
+export interface Conversation {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// A document the assistant drew on for an answer. `id` may point at a
+// document deleted since the message was written — the client must tolerate
+// dangling links.
+export interface Citation {
+  docId: string;
+  name: string;
+}
+
+// A tool invocation the assistant made while answering, kept for display
+// ("looked through the stash", "moved X to receipts…").
+export interface ToolCallRecord {
+  tool: string;
+  args: Record<string, unknown>;
+  summary: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  conversationId: string;
+  role: "user" | "assistant";
+  content: string;
+  citations?: Citation[];
+  toolCalls?: ToolCallRecord[];
+  createdAt: string;
+}
+
+export interface ConversationDetail extends Conversation {
+  messages: ChatMessage[];
+  pinnedDocIds: string[];
+}
+
+// SSE stream for POST /chat/:id/messages. `token` events carry answer text as
+// it generates; `tool` events fire when the assistant calls back into Stashd;
+// `done` carries the final persisted assistant message.
+export type ChatSSEEvent =
+  | { type: "token"; text: string }
+  | { type: "tool"; call: ToolCallRecord }
+  | { type: "done"; message: ChatMessage }
+  | { type: "error"; error: string };

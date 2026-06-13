@@ -16,7 +16,7 @@ npm-workspaces monorepo, three packages:
 | `packages/client` | React 18, Vite, react-router 6, pdfjs-dist, lucide-react | Single-page UI (no CSS framework — one hand-written `styles.css` with a paper/ledger aesthetic)                                                                                                                                                                         |
 | `packages/shared` | TypeScript only                                          | Types shared by both (`Document`, `Category`, `ClassificationResult`, `SearchHit`, `SSEEvent`…) plus runtime helpers that must not drift between client and server: `slugifyCategory`, `categoryNameFromSlug`, `COLOR_PALETTE`, `mimeFromExtension` (`src/category.ts`) |
 
-**Persistence:** a SQLite database at `data/stashd.db` (`StoreService`, better-sqlite3, WAL mode) holding documents and categories, with an FTS5 virtual table (`documents_fts`, external-content, trigger-synced) indexing name, summary, tags, vendor, category, notes and `extractedText`. On first boot against an empty database the legacy `data/manifest.json` is imported and renamed to `manifest.json.migrated` (kept as a recoverable backup). Original files live under `data/documents/<category-slug>/<docId>.<ext>`; in-flight uploads under `data/temp/<jobId>/`.
+**Persistence:** a SQLite database at `data/stashd.db` (`StoreService`, better-sqlite3, WAL mode) holding documents, categories, chat conversations/messages/pins, and the RAG layer: `doc_chunks` (chunk text) plus a **sqlite-vec** `vec0` virtual table (`doc_chunks_vec`) of embeddings, alongside an FTS5 virtual table (`documents_fts`, external-content, trigger-synced) indexing name, summary, tags, vendor, category, notes and `extractedText`. On first boot against an empty database the legacy `data/manifest.json` is imported and renamed to `manifest.json.migrated` (kept as a recoverable backup). Original files live under `data/documents/<category-slug>/<docId>.<ext>`; in-flight uploads under `data/temp/<jobId>/`.
 
 **There is no test suite — by design** (removed in commit `cdce640`). Verification is `npm run build` per workspace (runs `tsc`) plus driving the running app.
 
@@ -27,7 +27,7 @@ npm run dev:server   # Express on :3001 (tsx watch — see Known Quirks)
 npm run dev:client   # Vite on :5173, proxies /api → :3001
 ```
 
-Server env (`packages/server/.env`): `OLLAMA_URL` (default `http://localhost:11434`), `OLLAMA_MODEL` (default `gemma4`, must be multimodal + JSON-capable), `OLLAMA_API_KEY` (optional), `PORT` (default 3001). The provider layer (`providers/`) is a registry keyed by `PROVIDER` env var with Ollama as the only (and fallback) implementation.
+Server env (`packages/server/.env`): `OLLAMA_URL` (default `http://localhost:11434`), `OLLAMA_MODEL` (default `gemma4`, must be multimodal + JSON-capable **and tool-capable** — chat uses native tool calling), `OLLAMA_API_KEY` (optional), `PORT` (default 3001). Embeddings use a **separate, local** Ollama: `OLLAMA_EMBED_URL` (default `http://localhost:11434`), `OLLAMA_EMBED_MODEL` (default `embeddinggemma`, 768 dims — `ollama pull embeddinggemma` once), `OLLAMA_EMBED_API_KEY` (optional). The split exists because the configured cloud endpoint (`https://ollama.com`) serves no embedding models. The provider layer (`providers/`) is a registry keyed by `PROVIDER` env var with Ollama as the only (and fallback) implementation.
 
 ---
 
@@ -48,6 +48,18 @@ Documents have `status: "pending" | "filed"` — "pending" means flagged for a s
 - When the body text itself matched, the response `SearchHit` carries a `snippet` (FTS5 `snippet()`, match-aware) which the UI renders in italics on result cards/rows so you can see _why_ something matched.
 - **Startup backfill** (`services/textExtraction.ts`, `backfillDerivedFields`): on boot the server re-parses any PDF lacking `extractedText` and hashes any file lacking `contentHash`, so pre-feature documents become searchable and duplicate-checkable. Image text can't be backfilled (it comes from the model at classify time only).
 - Client: sidebar search box (the `/` key focuses it from anywhere) live-navigates to `/search?q=…` with a 180 ms debounce.
+
+---
+
+## 3b. Intelligence — "Ask the stash" (RAG chat with tools)
+
+A persistent chatbot (`/chat`, sidebar entry **Ask the stash**) that answers questions from the documents' actual text, with citations, and can act on the stash.
+
+**Indexing** (`services/EmbeddingService.ts`): each document's `extractedText` (fallback: summary + vendor + tags) is split into ~1400-char chunks (200 overlap, breaking on paragraph/sentence boundaries) and embedded via the local Ollama (`/api/embed`, embeddinggemma's documented `title:`/`task:` prefixes applied manually). Chunks land in `doc_chunks` + `doc_chunks_vec`. Indexing happens in the background at filing time (never blocks the file step), chunk rows are deleted with the document, and a boot backfill indexes anything missing — all serialized through a promise chain so batches don't stampede the local model. `rag_meta` records which model/dim built the index; changing the embed model drops and rebuilds it on next boot. If the embedding model is unreachable, boot logs a pull hint and chat degrades gracefully (no excerpts, but tools still work). Gotcha: sqlite-vec `vec0` rowids must be bound as `BigInt` from better-sqlite3.
+
+**Answering** (`services/ChatService.ts`): per user message, the question is embedded and the top 6 chunks (KNN) are placed in the system prompt as excerpts tagged `[doc:<id>]`; **pinned documents** (per-conversation, full text up to 8k chars each) ride along as primary context. The model (same cloud gemma as classification) then runs a native **tool loop** (max 6 rounds, streamed): `search_docs` (FTS), `read_doc` (full text, 12k cap), `update_doc` (re-categorize — creating drawers if needed —, add/remove tags, flag/unflag; only on explicit user request), `list_categories`. Answers cite inline as `[doc:<id>]`; the server parses these into `citations` (id + name, surviving later doc deletion) and persists tool calls as human-readable records. History sent to the model is capped at the last 20 messages.
+
+**Client** (`pages/ChatPage.tsx`): the conversation renders as a single "sheet" card — an **On the desk** pinned-docs tray along its top edge, the thread as ledger entries (assistant messages flush with a wax left rule, user messages as ink slips, mono rubrics with timestamps, day dividers), and the composer as the sheet's footer (auto-growing textarea, round wax send button). A "Correspondence" rail lists conversations (create/delete, relative dates, wax active bar). The empty state offers clickable suggestions grounded in the actual stash. Markdown-lite rendering covers paragraphs, bullets, **bold**, `###` headings and pipe tables (deliberately not a markdown engine); citation markers become chips linking to `/doc/:id`, with a "sources" footer per answer, and tool calls render as a mono work-log above the answer. **Citation ids are matched loosely and resolved by unique prefix** (client and server both) because the model sometimes drops trailing UUID characters; unresolvable citations render as inert chips. Text streamed before a tool round is treated as deliberation and discarded when the `tool` event arrives; an `update_doc` tool call triggers a store `refresh()`. SSE for the answer comes over a `fetch` POST stream (EventSource can't POST).
 
 ---
 
@@ -96,6 +108,10 @@ Categories are dynamic: seeded with just **Other** (`isCustom: false`, undeletab
 | `POST /categories`                               | create by name (auto icon/color)                                                                                            |
 | `PATCH /categories/:id`                          | rename / re-icon / re-color                                                                                                 |
 | `DELETE /categories/:id`                         | delete (custom + empty only)                                                                                                |
+| `GET /chat` / `POST /chat`                       | list conversations / start one                                                                                              |
+| `GET /chat/:id` / `DELETE /chat/:id`             | conversation with messages + pins / delete it                                                                               |
+| `PUT /chat/:id/pins`                             | replace pinned-document list `{ docIds }`                                                                                   |
+| `POST /chat/:id/messages`                        | send a user message; SSE stream of `token` / `tool` / `done` / `error` events                                               |
 
 ---
 
@@ -111,4 +127,4 @@ Categories are dynamic: seeded with just **Other** (`isCustom: false`, undeletab
 
 ## 8. Where it's headed
 
-See `docs/superpowers/plans/` for completed-work records. The agreed roadmap priorities: **RAG "ask your docs"** (embed `extractedText` chunks via an Ollama embedding model, answer questions with citations) next, with re-classify-on-demand and classification feedback loops as smaller follow-ups. Deprioritized for now: server-side thumbnails, dashboards/reminders. (The SQLite/FTS5 migration, duplicate detection, and the batch upload queue landed 2026-06-12.)
+See `docs/superpowers/plans/` for completed-work records. **RAG "ask your docs" + the tool-calling chat landed 2026-06-12** (§3b), as did the SQLite/FTS5 migration, duplicate detection, and the batch upload queue. Remaining roadmap: re-classify-on-demand and classification feedback loops as smaller follow-ups. Deprioritized for now: server-side thumbnails, dashboards/reminders. Known intelligence gaps: image-only documents are searchable only via their classify-time transcription; chat answers depend on the local embedding model being pulled; conversations have no rename, and answers stream but can't be cancelled mid-generation.

@@ -6,6 +6,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { StoreService } from '../services/StoreService';
 import { FileService } from '../services/FileService';
 import { ClassificationService } from '../services/ClassificationService';
+import { EmbeddingService } from '../services/EmbeddingService';
 import { CategoryId, Document, mimeFromExtension, SSEEvent, UploadResponse } from '@stashd/shared';
 import { buildCustomCategory, slugifyCategory } from '../services/categoryStyle';
 import { extractPdfText, hashBuffer } from '../services/textExtraction';
@@ -21,10 +22,11 @@ interface Services {
   store: StoreService;
   fileService: FileService;
   classificationService: ClassificationService;
+  embeddingService: EmbeddingService;
 }
 
 export function createDocumentRoutes(services: Services): Router {
-  const { store, fileService, classificationService } = services;
+  const { store, fileService, classificationService, embeddingService } = services;
   const router = Router();
 
   const upload = multer({
@@ -199,6 +201,11 @@ export function createDocumentRoutes(services: Services): Router {
 
     store.addDocument(doc);
 
+    // Vector-index in the background; filing never waits on the embedder.
+    void embeddingService.indexDocument(doc).catch((err: unknown) => {
+      console.warn(`Embedding failed for ${doc.originalName}:`, (err as Error).message);
+    });
+
     res.json(doc);
   });
 
@@ -296,6 +303,7 @@ export function createDocumentRoutes(services: Services): Router {
       console.warn(`Could not delete file for document ${req.params.id}:`, (err as Error).message);
     });
     store.removeDocument(req.params.id);
+    embeddingService.removeDocument(req.params.id);
 
     res.status(204).end();
   });

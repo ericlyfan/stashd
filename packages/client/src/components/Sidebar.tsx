@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { NavLink, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
-import { Inbox, Library, Plus, Search } from 'lucide-react';
+import { Inbox, Library, Plus, Search, Sparkles } from 'lucide-react';
 import { useStore } from '../store';
 import { batchUpdateDocuments, createCategory } from '../api';
 import { categoryIcon } from '../lib/categoryMeta';
@@ -110,6 +110,10 @@ export default function Sidebar() {
           <Library size={15} strokeWidth={1.8} />
           All documents
           <span className="count">{docs.length}</span>
+        </NavLink>
+        <NavLink to="/chat" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
+          <Sparkles size={15} strokeWidth={1.8} />
+          Ask the stash
         </NavLink>
       </nav>
 

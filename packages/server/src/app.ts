@@ -7,6 +7,9 @@ import { getProvider } from './providers';
 import { createDocumentRoutes } from './routes/documents';
 import { backfillDerivedFields } from './services/textExtraction';
 import { createCategoryRoutes } from './routes/categories';
+import { EmbeddingService } from './services/EmbeddingService';
+import { ChatService } from './services/ChatService';
+import { createChatRoutes } from './routes/chat';
 
 interface AppOverrides {
   classificationService?: ClassificationService;
@@ -19,21 +22,34 @@ export async function createApp(dataDir: string, overrides: AppOverrides = {}): 
   const fileService = new FileService(dataDir);
   await fileService.ensureDirs();
 
-  // Catch up documents filed before extractedText / contentHash existed;
-  // runs in the background so startup isn't blocked by a large stash.
-  void backfillDerivedFields(store, fileService).catch((err: unknown) => {
-    console.warn('Backfill failed:', (err as Error).message);
-  });
+  const embeddingService = new EmbeddingService(store);
+
+  // Catch up documents filed before extractedText / contentHash existed,
+  // then build/refresh the vector index; both run in the background so
+  // startup isn't blocked by a large stash or a cold embedding model.
+  void backfillDerivedFields(store, fileService)
+    .catch((err: unknown) => {
+      console.warn('Backfill failed:', (err as Error).message);
+    })
+    .then(() => embeddingService.init())
+    .catch((err: unknown) => {
+      console.warn(
+        `Vector index unavailable (is the embedding model pulled? ollama pull ${process.env.OLLAMA_EMBED_MODEL ?? 'embeddinggemma'}):`,
+        (err as Error).message,
+      );
+    });
 
   const provider = getProvider(process.env.PROVIDER ?? 'ollama');
   const classificationService = overrides.classificationService ?? new ClassificationService(provider);
+  const chatService = new ChatService(store, embeddingService);
 
   const app = express();
   app.use(cors());
   app.use(express.json());
 
-  app.use('/api/documents', createDocumentRoutes({ store, fileService, classificationService }));
+  app.use('/api/documents', createDocumentRoutes({ store, fileService, classificationService, embeddingService }));
   app.use('/api/categories', createCategoryRoutes({ store }));
+  app.use('/api/chat', createChatRoutes({ store, chatService }));
 
   return app;
 }

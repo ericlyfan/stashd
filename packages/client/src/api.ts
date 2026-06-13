@@ -1,4 +1,13 @@
-import { Category, Document, SearchHit, SSEEvent, UploadResponse } from '@stashd/shared';
+import {
+  Category,
+  ChatSSEEvent,
+  Conversation,
+  ConversationDetail,
+  Document,
+  SearchHit,
+  SSEEvent,
+  UploadResponse,
+} from '@stashd/shared';
 
 export type { UploadResponse } from '@stashd/shared';
 
@@ -123,6 +132,77 @@ export function updateCategory(
 
 export function fileUrl(docId: string): string {
   return `${BASE}/documents/${docId}/file`;
+}
+
+// ── Chat ────────────────────────────────────────────────────────────────────
+
+export function listConversations(): Promise<Conversation[]> {
+  return req<Conversation[]>('/chat');
+}
+
+export function createConversation(): Promise<Conversation> {
+  return req<Conversation>('/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  });
+}
+
+export function getConversation(id: string): Promise<ConversationDetail> {
+  return req<ConversationDetail>(`/chat/${id}`);
+}
+
+export function deleteConversation(id: string): Promise<void> {
+  return req<void>(`/chat/${id}`, { method: 'DELETE' });
+}
+
+export function setConversationPins(id: string, docIds: string[]): Promise<{ pinnedDocIds: string[] }> {
+  return req<{ pinnedDocIds: string[] }>(`/chat/${id}/pins`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ docIds }),
+  });
+}
+
+/**
+ * Send a message and stream the assistant's answer. EventSource can't POST,
+ * so this reads the SSE body off a fetch stream. Resolves once the stream
+ * ends (after a `done` or `error` event).
+ */
+export async function sendChatMessage(
+  conversationId: string,
+  content: string,
+  onEvent: (event: ChatSSEEvent) => void,
+): Promise<void> {
+  const res = await fetch(`${BASE}/chat/${conversationId}/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  });
+  if (!res.ok || !res.body) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `Request failed: ${res.status}`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const parts = buffer.split('\n\n');
+    buffer = parts.pop() ?? '';
+    for (const part of parts) {
+      const line = part.trim();
+      if (!line.startsWith('data: ')) continue;
+      try {
+        onEvent(JSON.parse(line.slice(6)) as ChatSSEEvent);
+      } catch {
+        // ignore malformed events
+      }
+    }
+  }
 }
 
 export function subscribeClassify(jobId: string, onEvent: (event: SSEEvent) => void): EventSource {

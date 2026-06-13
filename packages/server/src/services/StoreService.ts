@@ -1,7 +1,16 @@
 import Database from 'better-sqlite3';
+import * as sqliteVec from 'sqlite-vec';
 import { existsSync, renameSync, readFileSync } from 'fs';
 import { join } from 'path';
-import { Document, Category, CategoryId, SearchHit } from '@stashd/shared';
+import {
+  Document,
+  Category,
+  CategoryId,
+  SearchHit,
+  Conversation,
+  ConversationDetail,
+  ChatMessage,
+} from '@stashd/shared';
 
 // Markers FTS5 snippet() wraps matches in; stripped before the snippet is
 // sent to the client, and used to tell "real match in body text" apart from
@@ -103,6 +112,7 @@ export class StoreService {
   async load(): Promise<void> {
     this.db = new Database(join(this.dataDir, 'stashd.db'));
     this.db.pragma('journal_mode = WAL');
+    sqliteVec.load(this.db);
     this.createSchema();
     this.migrateFromManifest();
     if ((this.db.prepare('SELECT COUNT(*) AS n FROM categories').get() as { n: number }).n === 0) {
@@ -164,6 +174,44 @@ export class StoreService {
         INSERT INTO documents_fts(rowid, original_name, summary, tags, vendor, category, notes, extracted_text)
         VALUES (new.rowid, new.original_name, new.summary, new.tags, new.vendor, new.category, new.notes, new.extracted_text);
       END;
+
+      CREATE TABLE IF NOT EXISTS doc_chunks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        doc_id TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        text TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_doc_chunks_doc ON doc_chunks(doc_id);
+
+      -- Records which embedding model/dimension built the vector index, so a
+      -- model swap triggers a full re-embed instead of mixing vector spaces.
+      CREATE TABLE IF NOT EXISTS rag_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS conversations (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS messages (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        meta TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
+
+      CREATE TABLE IF NOT EXISTS conversation_pins (
+        conversation_id TEXT NOT NULL,
+        doc_id TEXT NOT NULL,
+        PRIMARY KEY (conversation_id, doc_id)
+      );
     `);
   }
 
@@ -352,5 +400,194 @@ export class StoreService {
       }
       return doc;
     });
+  }
+
+  // ── Vector index (RAG) ──────────────────────────────────────────────────
+
+  /**
+   * Creates the vec0 table for the given embedding model. The table dimension
+   * is fixed at creation, so switching models (or dims) drops the whole index
+   * — callers re-embed everything afterwards. Returns true if the index was
+   * (re)created empty.
+   */
+  ensureVecIndex(model: string, dim: number): boolean {
+    const current = this.db.prepare("SELECT value FROM rag_meta WHERE key = 'embedding'").get() as
+      | { value: string }
+      | undefined;
+    const wanted = `${model}/${dim}`;
+    const tableExists = !!this.db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'doc_chunks_vec'")
+      .get();
+    if (current?.value === wanted && tableExists) return false;
+
+    const rebuild = this.db.transaction(() => {
+      if (tableExists) this.db.exec('DROP TABLE doc_chunks_vec');
+      this.db.exec('DELETE FROM doc_chunks');
+      this.db.exec(`CREATE VIRTUAL TABLE doc_chunks_vec USING vec0(embedding float[${dim}])`);
+      this.db
+        .prepare("INSERT INTO rag_meta (key, value) VALUES ('embedding', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+        .run(wanted);
+    });
+    rebuild();
+    return true;
+  }
+
+  /** Doc ids that have indexable text but no chunks yet (boot backfill). */
+  getDocIdsNeedingIndex(): string[] {
+    const rows = this.db
+      .prepare(`
+        SELECT id FROM documents
+        WHERE id NOT IN (SELECT DISTINCT doc_id FROM doc_chunks)
+        ORDER BY rowid
+      `)
+      .all() as { id: string }[];
+    return rows.map(r => r.id);
+  }
+
+  replaceDocChunks(docId: string, chunks: { text: string; embedding: Float32Array }[]): void {
+    const insertChunk = this.db.prepare('INSERT INTO doc_chunks (doc_id, seq, text) VALUES (?, ?, ?)');
+    const insertVec = this.db.prepare('INSERT INTO doc_chunks_vec (rowid, embedding) VALUES (?, ?)');
+    const run = this.db.transaction(() => {
+      this.deleteChunksUnsafe(docId);
+      chunks.forEach((chunk, seq) => {
+        const rowid = insertChunk.run(docId, seq, chunk.text).lastInsertRowid;
+        // vec0 insists the rowid arrives as a true SQLite integer; a JS
+        // number binds as a float and gets rejected.
+        insertVec.run(BigInt(rowid), Buffer.from(chunk.embedding.buffer, chunk.embedding.byteOffset, chunk.embedding.byteLength));
+      });
+    });
+    run();
+  }
+
+  deleteDocChunks(docId: string): void {
+    const run = this.db.transaction(() => this.deleteChunksUnsafe(docId));
+    run();
+  }
+
+  private deleteChunksUnsafe(docId: string): void {
+    const ids = this.db.prepare('SELECT id FROM doc_chunks WHERE doc_id = ?').all(docId) as { id: number }[];
+    if (ids.length === 0) return;
+    const delVec = this.db.prepare('DELETE FROM doc_chunks_vec WHERE rowid = ?');
+    for (const { id } of ids) delVec.run(BigInt(id));
+    this.db.prepare('DELETE FROM doc_chunks WHERE doc_id = ?').run(docId);
+  }
+
+  /** KNN over chunk embeddings; joins back to the owning document. */
+  searchChunks(
+    embedding: Float32Array,
+    k: number,
+  ): { docId: string; docName: string; category: string; seq: number; text: string; distance: number }[] {
+    const rows = this.db
+      .prepare(`
+        SELECT c.doc_id AS docId, d.original_name AS docName, d.category AS category,
+               c.seq AS seq, c.text AS text, v.distance AS distance
+        FROM (
+          SELECT rowid, distance FROM doc_chunks_vec
+          WHERE embedding MATCH ? AND k = ?
+        ) v
+        JOIN doc_chunks c ON c.id = v.rowid
+        JOIN documents d ON d.id = c.doc_id
+        ORDER BY v.distance
+      `)
+      .all(Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength), k) as {
+      docId: string;
+      docName: string;
+      category: string;
+      seq: number;
+      text: string;
+      distance: number;
+    }[];
+    return rows;
+  }
+
+  // ── Conversations & messages ────────────────────────────────────────────
+
+  listConversations(): Conversation[] {
+    const rows = this.db
+      .prepare('SELECT id, title, created_at, updated_at FROM conversations ORDER BY updated_at DESC')
+      .all() as { id: string; title: string; created_at: string; updated_at: string }[];
+    return rows.map(r => ({ id: r.id, title: r.title, createdAt: r.created_at, updatedAt: r.updated_at }));
+  }
+
+  addConversation(conv: Conversation): void {
+    this.db
+      .prepare('INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)')
+      .run(conv.id, conv.title, conv.createdAt, conv.updatedAt);
+  }
+
+  getConversation(id: string): ConversationDetail | undefined {
+    const row = this.db
+      .prepare('SELECT id, title, created_at, updated_at FROM conversations WHERE id = ?')
+      .get(id) as { id: string; title: string; created_at: string; updated_at: string } | undefined;
+    if (!row) return undefined;
+    return {
+      id: row.id,
+      title: row.title,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      messages: this.getMessages(id),
+      pinnedDocIds: this.getPins(id),
+    };
+  }
+
+  touchConversation(id: string, updates: { title?: string; updatedAt: string }): void {
+    if (updates.title !== undefined) {
+      this.db.prepare('UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?').run(updates.title, updates.updatedAt, id);
+    } else {
+      this.db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(updates.updatedAt, id);
+    }
+  }
+
+  removeConversation(id: string): boolean {
+    const run = this.db.transaction(() => {
+      this.db.prepare('DELETE FROM messages WHERE conversation_id = ?').run(id);
+      this.db.prepare('DELETE FROM conversation_pins WHERE conversation_id = ?').run(id);
+      return this.db.prepare('DELETE FROM conversations WHERE id = ?').run(id).changes > 0;
+    });
+    return run();
+  }
+
+  getMessages(conversationId: string): ChatMessage[] {
+    const rows = this.db
+      .prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY rowid')
+      .all(conversationId) as { id: string; conversation_id: string; role: string; content: string; meta: string | null; created_at: string }[];
+    return rows.map(r => {
+      const meta = r.meta ? (JSON.parse(r.meta) as Pick<ChatMessage, 'citations' | 'toolCalls'>) : {};
+      return {
+        id: r.id,
+        conversationId: r.conversation_id,
+        role: r.role as ChatMessage['role'],
+        content: r.content,
+        citations: meta.citations,
+        toolCalls: meta.toolCalls,
+        createdAt: r.created_at,
+      };
+    });
+  }
+
+  addMessage(msg: ChatMessage): void {
+    const meta =
+      msg.citations?.length || msg.toolCalls?.length
+        ? JSON.stringify({ citations: msg.citations, toolCalls: msg.toolCalls })
+        : null;
+    this.db
+      .prepare('INSERT INTO messages (id, conversation_id, role, content, meta, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(msg.id, msg.conversationId, msg.role, msg.content, meta, msg.createdAt);
+  }
+
+  getPins(conversationId: string): string[] {
+    const rows = this.db
+      .prepare('SELECT doc_id FROM conversation_pins WHERE conversation_id = ? ORDER BY rowid')
+      .all(conversationId) as { doc_id: string }[];
+    return rows.map(r => r.doc_id);
+  }
+
+  setPins(conversationId: string, docIds: string[]): void {
+    const run = this.db.transaction(() => {
+      this.db.prepare('DELETE FROM conversation_pins WHERE conversation_id = ?').run(conversationId);
+      const insert = this.db.prepare('INSERT OR IGNORE INTO conversation_pins (conversation_id, doc_id) VALUES (?, ?)');
+      for (const docId of docIds) insert.run(conversationId, docId);
+    });
+    run();
   }
 }
