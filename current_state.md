@@ -1,6 +1,6 @@
 # Stashd — Current State
 
-_Last updated: 2026-06-12_
+_Last updated: 2026-06-18_
 
 Stashd is a **local-first document organizer**. You drop in PDFs and photos (receipts, leases, IDs, manuals…), a multimodal LLM running on your own Ollama instance reads each one and proposes a filing — category, tags, summary, key dates, amounts, vendor — and you approve or correct it before it lands in the "stash." Nothing leaves the machine except the call to your configured Ollama endpoint.
 
@@ -16,7 +16,7 @@ npm-workspaces monorepo, three packages:
 | `packages/client` | React 18, Vite, react-router 6, pdfjs-dist, lucide-react | Single-page UI (no CSS framework — one hand-written `styles.css` with a paper/ledger aesthetic)                                                                                                                                                                         |
 | `packages/shared` | TypeScript only                                          | Types shared by both (`Document`, `Category`, `ClassificationResult`, `SearchHit`, `SSEEvent`…) plus runtime helpers that must not drift between client and server: `slugifyCategory`, `categoryNameFromSlug`, `COLOR_PALETTE`, `mimeFromExtension` (`src/category.ts`) |
 
-**Persistence:** a SQLite database at `data/stashd.db` (`StoreService`, better-sqlite3, WAL mode) holding documents, categories, chat conversations/messages/pins, and the RAG layer: `doc_chunks` (chunk text) plus a **sqlite-vec** `vec0` virtual table (`doc_chunks_vec`) of embeddings, alongside an FTS5 virtual table (`documents_fts`, external-content, trigger-synced) indexing name, summary, tags, vendor, category, notes and `extractedText`. On first boot against an empty database the legacy `data/manifest.json` is imported and renamed to `manifest.json.migrated` (kept as a recoverable backup). Original files live under `data/documents/<category-slug>/<docId>.<ext>`; in-flight uploads under `data/temp/<jobId>/`.
+**Persistence:** a SQLite database at `data/stashd.db` (`StoreService`, better-sqlite3, WAL mode) holding documents, categories, chat conversations/messages/pins, and the RAG layer: `doc_chunks` (chunk text) plus a **sqlite-vec** `vec0` virtual table (`doc_chunks_vec`) of embeddings, alongside an FTS5 virtual table (`documents_fts`, external-content, trigger-synced) indexing name, summary, tags, vendor, category, notes and `extractedText`. On first boot against an empty database the legacy `data/manifest.json` is imported and renamed to `manifest.json.migrated` (kept as a recoverable backup). Original files live under `data/documents/<category-slug>/<docId>.<ext>`; in-flight uploads under `data/temp/<jobId>/`. **Lightweight schema migrations** run at boot via `table_info`-guarded `ALTER TABLE ADD COLUMN` (`migrateCategoryColumns` added the categories' `pinned`/`position` columns this way — safe to re-run on an already-migrated database).
 
 **There is no test suite — by design** (removed in commit `cdce640`). Verification is `npm run build` per workspace (runs `tsc`) plus driving the running app.
 
@@ -71,7 +71,9 @@ A largely independent section (sidebar entry **Ledgers**, `/ledgers`) for tracki
 
 **Document links are bidirectional.** A line item may link one stash document as supporting evidence (picked via the same search-popover the chat uses for pins). The document page shows a **"Cited in ledgers"** card listing every line item that references it (`GET /api/projects/by-document/:docId`). Deleting a document nulls those links inside `removeDocument`'s transaction, so they dangle harmlessly rather than break.
 
-**UI** (`pages/LedgersPage.tsx`, `pages/LedgerPage.tsx`): the index is a grid of project cards (total paid, line count, archived state) with a stats strip. A project page has the money stats strip, the by-category/by-vendor breakdown bars, and the line-item table (dense, tabular-nums, a totals `tfoot`); clicking a row opens `LineItemDialog` (all fields, with **Total paid** auto-summing from paid + tax until the user overrides it, plus the document picker). `ProjectDialog` handles create/edit. Projects ride along in the global `store` (`projects`, loaded with docs + categories in `refresh()`), so the sidebar shows an active-project count.
+**UI** (`pages/LedgersPage.tsx`, `pages/LedgerPage.tsx`): the index is a grid of project cards (total paid, line count, archived state) with a stats strip. A project page has the money stats strip, the by-category/by-vendor breakdown bars, a **spend timeline** (`components/SpendTimeline.tsx`), and the line-item table (dense, tabular-nums, a totals `tfoot`); clicking a row opens `LineItemDialog` (all fields, with **Total paid** auto-summing from paid + tax until the user overrides it, plus the document picker). `ProjectDialog` handles create/edit. Projects ride along in the global `store` (`projects`, loaded with docs + categories in `refresh()`), so the sidebar shows an active-project count.
+
+**Spend timeline** (`components/SpendTimeline.tsx`): a chart of line-item `totalPaid` over time with three modes — **Monthly**, **Quarterly**, and **By category**. Time buckets are gap-filled (it walks month-by-month from the first to the last paid date so quiet periods render as empty columns — the gaps are how you read pacing) and each column stacks into per-category segments (colored from `CATEGORY_COLORS`). Items with a missing/invalid `datePaid` can't be placed in time, so their spend is summed separately and noted rather than dropped. Clicking a segment opens the underlying line item.
 
 **Chat awareness:** the system prompt now includes a roster of projects with totals, and the tool loop gains `list_projects` and `read_project` (the latter returns line items plus by-category/by-vendor breakdowns and resolves a project by id **or** name), so "Ask the stash" can answer financial questions across ledgers.
 
@@ -84,6 +86,12 @@ Categories are dynamic: seeded with just **Other** (`isCustom: false`, undeletab
 - **Edit**: every category page has an Edit button → dialog to rename and pick any icon/color. `PATCH /api/categories/:id` — the slug never changes, so documents don't need rewriting.
 - **Delete**: only **custom and empty** drawers (`DELETE /api/categories/:id`; 400 with a count otherwise). The category page's "Remove drawer" button is disabled with an explanatory hint while documents remain — re-file the contents first (drag-and-drop, or the category select on each document's page).
 - **Drag-and-drop filing**: any document card/row can be dragged onto a sidebar drawer (custom MIME `application/x-stashd-docs`; drop target highlights; toast confirms). Re-categorizing does **not** move the file on disk — `storagePath` keeps the original folder, which is cosmetic only.
+
+**Sidebar drawer ordering** (`components/Sidebar.tsx`): categories carry two extra fields, `pinned: boolean` and `position: number` (`@stashd/shared` `Category`). Drawers sort pinned-first, then by manual `position` (>0 wins), then by usage (document count), then name (`sortDrawers`); a thin rule separates the pinned group from the rest.
+
+- **Pin/unpin**: a pin button on each drawer toggles `pinned` via `PATCH /api/categories/:id` — optimistic (the row jumps immediately; a failure refetches to snap back).
+- **Reorder**: drawers are draggable and drop onto each other (custom MIME `application/x-stashd-drawer`, kept distinct from the document-filing MIME so the two gestures don't collide). Dropping inserts the dragged drawer before the target and persists the whole order via `PATCH /api/categories/reorder` (`StoreService.reorderCategories` stamps 1-based positions in a transaction); also optimistic.
+- **Collapsible cabinet**: "The Cabinet" header has a chevron that hides/shows the drawer list, persisted in `localStorage` (`stashd:cabinet-collapsed`).
 
 ---
 
@@ -107,7 +115,7 @@ Categories are dynamic: seeded with just **Other** (`isCustom: false`, undeletab
 
 | Method & path                                    | Purpose                                                                                                                     |
 | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
-| `POST /documents/upload`                         | multipart upload → `{ jobId, duplicate? }` (413 over 50 MB, 400 bad type)                                                  |
+| `POST /documents/upload`                         | multipart upload → `{ jobId, duplicate? }` (413 over 50 MB, 400 bad type)                                                   |
 | `DELETE /documents/job/:jobId`                   | discard an in-flight upload (temp dir + sidecar); idempotent 204                                                            |
 | `GET /documents/process/:jobId`                  | SSE: `extracting → classifying → complete` (with classification) or `error`                                                 |
 | `POST /documents/file/:jobId`                    | persist a reviewed document                                                                                                 |
@@ -118,7 +126,8 @@ Categories are dynamic: seeded with just **Other** (`isCustom: false`, undeletab
 | `DELETE /documents/:id`                          | delete file + entry                                                                                                         |
 | `GET /categories`                                | all categories with live `documentCount`                                                                                    |
 | `POST /categories`                               | create by name (auto icon/color)                                                                                            |
-| `PATCH /categories/:id`                          | rename / re-icon / re-color                                                                                                 |
+| `PATCH /categories/:id`                          | rename / re-icon / re-color / pin (`pinned`)                                                                                |
+| `PATCH /categories/reorder`                      | persist manual drawer order `{ ids }` (declared before `:id` so "reorder" isn't read as an id)                              |
 | `DELETE /categories/:id`                         | delete (custom + empty only)                                                                                                |
 | `GET /chat` / `POST /chat`                       | list conversations / start one                                                                                              |
 | `GET /chat/:id` / `DELETE /chat/:id`             | conversation with messages + pins / delete it                                                                               |
