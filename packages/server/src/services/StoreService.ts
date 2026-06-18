@@ -27,7 +27,7 @@ const SNIP_OPEN = '\u0002';
 const SNIP_CLOSE = '\u0003';
 
 const DEFAULT_CATEGORIES: Category[] = [
-  { id: 'other', name: 'Other', icon: 'folder', color: '#a8a29e', isCustom: false },
+  { id: 'other', name: 'Other', icon: 'folder', color: '#a8a29e', isCustom: false, pinned: false, position: 0 },
 ];
 
 interface DocumentRow {
@@ -60,6 +60,8 @@ interface CategoryRow {
   color: string;
   icon: string;
   is_custom: number;
+  pinned: number;
+  position: number;
 }
 
 function rowToDocument(row: DocumentRow): Document {
@@ -88,7 +90,15 @@ function rowToDocument(row: DocumentRow): Document {
 }
 
 function rowToCategory(row: CategoryRow): Category {
-  return { id: row.id, name: row.name, color: row.color, icon: row.icon, isCustom: row.is_custom === 1 };
+  return {
+    id: row.id,
+    name: row.name,
+    color: row.color,
+    icon: row.icon,
+    isCustom: row.is_custom === 1,
+    pinned: row.pinned === 1,
+    position: row.position ?? 0,
+  };
 }
 
 interface ProjectRow {
@@ -197,9 +207,23 @@ export class StoreService {
     this.db.pragma('journal_mode = WAL');
     sqliteVec.load(this.db);
     this.createSchema();
+    this.migrateCategoryColumns();
     this.migrateFromManifest();
     if ((this.db.prepare('SELECT COUNT(*) AS n FROM categories').get() as { n: number }).n === 0) {
       for (const cat of DEFAULT_CATEGORIES) this.addCategory(cat);
+    }
+  }
+
+  // Adds the pinned/position columns to category tables created before sidebar
+  // ordering existed. ALTER ADD COLUMN is a no-op-safe pattern guarded by a
+  // table_info lookup so it never throws on an already-migrated database.
+  private migrateCategoryColumns(): void {
+    const cols = (this.db.prepare('PRAGMA table_info(categories)').all() as { name: string }[]).map(c => c.name);
+    if (!cols.includes('pinned')) {
+      this.db.exec('ALTER TABLE categories ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0');
+    }
+    if (!cols.includes('position')) {
+      this.db.exec('ALTER TABLE categories ADD COLUMN position INTEGER NOT NULL DEFAULT 0');
     }
   }
 
@@ -210,7 +234,9 @@ export class StoreService {
         name TEXT NOT NULL,
         color TEXT NOT NULL,
         icon TEXT NOT NULL,
-        is_custom INTEGER NOT NULL DEFAULT 1
+        is_custom INTEGER NOT NULL DEFAULT 1,
+        pinned INTEGER NOT NULL DEFAULT 0,
+        position INTEGER NOT NULL DEFAULT 0
       );
 
       CREATE TABLE IF NOT EXISTS documents (
@@ -474,18 +500,41 @@ export class StoreService {
 
   addCategory(category: Category): void {
     this.db
-      .prepare('INSERT OR IGNORE INTO categories (id, name, color, icon, is_custom) VALUES (?, ?, ?, ?, ?)')
-      .run(category.id, category.name, category.color, category.icon, category.isCustom ? 1 : 0);
+      .prepare(
+        'INSERT OR IGNORE INTO categories (id, name, color, icon, is_custom, pinned, position) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      )
+      .run(
+        category.id,
+        category.name,
+        category.color,
+        category.icon,
+        category.isCustom ? 1 : 0,
+        category.pinned ? 1 : 0,
+        category.position ?? 0,
+      );
   }
 
-  updateCategory(id: string, updates: Partial<Pick<Category, 'name' | 'icon' | 'color'>>): Category | undefined {
+  updateCategory(
+    id: string,
+    updates: Partial<Pick<Category, 'name' | 'icon' | 'color' | 'pinned' | 'position'>>,
+  ): Category | undefined {
     const existing = this.getCategory(id);
     if (!existing) return undefined;
     const merged = { ...existing, ...updates };
     this.db
-      .prepare('UPDATE categories SET name = ?, icon = ?, color = ? WHERE id = ?')
-      .run(merged.name, merged.icon, merged.color, id);
+      .prepare('UPDATE categories SET name = ?, icon = ?, color = ?, pinned = ?, position = ? WHERE id = ?')
+      .run(merged.name, merged.icon, merged.color, merged.pinned ? 1 : 0, merged.position, id);
     return merged;
+  }
+
+  // Persists a manual drawer order by stamping 1-based positions onto the given
+  // ids in array order. Ids not present keep their existing position.
+  reorderCategories(orderedIds: string[]): void {
+    const stmt = this.db.prepare('UPDATE categories SET position = ? WHERE id = ?');
+    const tx = this.db.transaction((ids: string[]) => {
+      ids.forEach((id, i) => stmt.run(i + 1, id));
+    });
+    tx(orderedIds);
   }
 
   removeCategory(id: string): boolean {

@@ -62,7 +62,7 @@ export default function EditDrawerDialog({
                   style={{ color }}
                   onClick={() => setIcon(slug)}
                 >
-                  <Icon size={16} strokeWidth={1.8} />
+                  <Icon size={15} strokeWidth={1.8} />
                 </button>
               );
             })}

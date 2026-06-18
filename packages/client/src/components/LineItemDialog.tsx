@@ -86,7 +86,7 @@ export default function LineItemDialog({ projectId, item, suggestions, busy, onS
         <div className="li-dialog-head">
           <h3>{item ? 'Edit line item' : 'New line item'}</h3>
           <button className="li-x" onClick={onClose} aria-label="Close">
-            <X size={16} />
+            <X size={15} />
           </button>
         </div>
 

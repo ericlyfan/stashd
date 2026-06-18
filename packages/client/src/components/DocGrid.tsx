@@ -8,7 +8,10 @@ import { categoryIcon } from '../lib/categoryMeta';
 import { CategoryStamp, StatusStamp } from './Stamps';
 import { pdfThumbnail } from '../lib/thumbs';
 
-function Thumb({ doc }: { doc: Document }) {
+// Resolves a previewable image source for a document, lazily rendering PDF
+// first pages only once the host element nears the viewport. Shared by the
+// grid thumbnail, the row thumbnail, and the row hover preview.
+export function useThumbSrc(doc: Document) {
   const { categoryById } = useStore();
   const isPdf = doc.fileType === 'application/pdf';
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -54,13 +57,18 @@ function Thumb({ doc }: { doc: Document }) {
 
   const cat = categoryById(doc.category);
   const Icon = categoryIcon(cat?.icon);
+  return { wrapRef, src, failed, setFailed, Icon, color: cat?.color ?? '#8d8472' };
+}
+
+export function Thumb({ doc, iconSize = 38 }: { doc: Document; iconSize?: number }) {
+  const { wrapRef, src, failed, setFailed, Icon, color } = useThumbSrc(doc);
   return (
     <div className="thumb-wrap" ref={wrapRef}>
       {src && !failed ? (
         <img className="thumb-img" src={src} alt="" loading="lazy" onError={() => setFailed(true)} />
       ) : (
-        <div className="thumb-fallback" style={{ color: cat?.color ?? '#8d8472' }}>
-          <Icon size={30} strokeWidth={1.5} />
+        <div className="thumb-fallback" style={{ color }}>
+          <Icon size={iconSize} strokeWidth={1.5} />
         </div>
       )}
     </div>

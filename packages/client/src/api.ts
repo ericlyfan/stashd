@@ -128,12 +128,21 @@ export function deleteCategory(id: string): Promise<void> {
 
 export function updateCategory(
   id: string,
-  updates: { name?: string; icon?: string; color?: string },
+  updates: { name?: string; icon?: string; color?: string; pinned?: boolean },
 ): Promise<CategoryWithCount> {
   return req<CategoryWithCount>(`/categories/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(updates),
+  });
+}
+
+// Persist a manual drawer order; returns the full category list re-sorted.
+export function reorderCategories(ids: string[]): Promise<CategoryWithCount[]> {
+  return req<CategoryWithCount[]>('/categories/reorder', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids }),
   });
 }
 

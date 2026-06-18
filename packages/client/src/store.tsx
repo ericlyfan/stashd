@@ -69,6 +69,7 @@ function mimeFromName(name: string, fallback: string): string {
 interface StoreState {
   docs: Document[];
   categories: CategoryWithCount[];
+  setCategories: React.Dispatch<React.SetStateAction<CategoryWithCount[]>>;
   projects: ProjectSummary[];
   loading: boolean;
   refresh: () => Promise<void>;
@@ -280,6 +281,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     () => ({
       docs,
       categories,
+      setCategories,
       projects,
       loading,
       refresh,
@@ -294,7 +296,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       toasts,
       notify,
     }),
-    [docs, categories, projects, loading, refresh, queue, addFiles, dismissItem, dismissItems, fileItem, reviewItemId, toasts, notify],
+    [docs, categories, setCategories, projects, loading, refresh, queue, addFiles, dismissItem, dismissItems, fileItem, reviewItemId, toasts, notify],
   );
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;

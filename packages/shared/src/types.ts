@@ -42,6 +42,10 @@ export interface Category {
   color: string;
   icon: string;
   isCustom: boolean;
+  // Whether the drawer is pinned to the top of the sidebar.
+  pinned: boolean;
+  // Manual sort order in the sidebar; 0 means unset (falls back to usage sort).
+  position: number;
 }
 
 // Returned by POST /documents/upload. `duplicate` points at an already-filed

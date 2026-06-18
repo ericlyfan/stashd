@@ -576,7 +576,7 @@ export default function ChatPage() {
                   )}
                   <article className={`chat-msg ${msg.role}`}>
                     <div className="msg-rubric">
-                      {msg.role === 'assistant' && <Sparkles size={10} />}
+                      {msg.role === 'assistant' && <Sparkles size={11} />}
                       <span>{msg.role === 'assistant' ? 'Stash’d' : 'You'}</span>
                       <span className="msg-time">{clockTime(msg.createdAt)}</span>
                     </div>
@@ -593,7 +593,7 @@ export default function ChatPage() {
             {stream && (
               <article className="chat-msg assistant streaming">
                 <div className="msg-rubric">
-                  <Sparkles size={10} />
+                  <Sparkles size={11} />
                   <span>Stash’d</span>
                 </div>
                 {stream.tools.length > 0 && <ToolTrace calls={stream.tools} />}

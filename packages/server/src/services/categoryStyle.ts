@@ -59,5 +59,7 @@ export function buildCustomCategory(rawId: string): Category {
     icon: iconMatch ? iconMatch[1] : 'folder',
     color: COLOR_PALETTE[hashSlug(id) % COLOR_PALETTE.length],
     isCustom: true,
+    pinned: false,
+    position: 0,
   };
 }

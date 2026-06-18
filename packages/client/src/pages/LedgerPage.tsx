@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { Archive, ArchiveRestore, ArrowLeft, BookOpen, LucideIcon, Paperclip, Pencil, Plus, Store, Tags, Trash2 } from 'lucide-react';
+import { Archive, ArchiveRestore, ArrowLeft, BookOpen, LucideIcon, Paperclip, Pencil, Plus, Store, Tags, Trash2, TrendingUp } from 'lucide-react';
 import { LineItem, LineItemInput, ProjectDetail } from '@stashd/shared';
 import {
   addLineItem,
@@ -15,6 +15,7 @@ import LineItemDialog, { ItemSuggestions } from '../components/LineItemDialog';
 import ProjectDialog from '../components/ProjectDialog';
 import ConfirmDialog from '../components/ConfirmDialog';
 import EmptyState from '../components/EmptyState';
+import SpendTimeline from '../components/SpendTimeline';
 import { CATEGORY_COLORS } from '../lib/categoryMeta';
 import { formatAmount, formatCell, formatDate } from '../lib/format';
 
@@ -50,6 +51,16 @@ function groupTotals(items: LineItem[], pick: (it: LineItem) => string | undefin
     map.set(label, (map.get(label) ?? 0) + (it.totalPaid ?? 0));
   }
   return [...map.entries()].map(([label, total]) => ({ label, total })).sort((a, b) => b.total - a.total);
+}
+
+// Count of distinct months that carry a paid date — gates the over-time tab,
+// which has nothing to show until spend spans more than one month.
+function paidMonthCount(items: LineItem[]): number {
+  const months = new Set<string>();
+  for (const it of items) {
+    if (it.datePaid && !isNaN(Date.parse(it.datePaid))) months.add(it.datePaid.slice(0, 7));
+  }
+  return months.size;
 }
 
 export default function LedgerPage() {
@@ -90,6 +101,7 @@ export default function LedgerPage() {
   );
   const byCategory = useMemo(() => groupTotals(items, it => it.category), [items]);
   const byVendor = useMemo(() => groupTotals(items, it => it.vendor), [items]);
+  const paidMonths = useMemo(() => paidMonthCount(items), [items]);
   const groups = useMemo(() => groupByCategory(items), [items]);
 
   if (missing) {
@@ -275,15 +287,16 @@ export default function LedgerPage() {
         </div>
       ) : (
         <>
-          {(byCategory.length > 1 || byVendor.length > 1) && (
-            <Analytics
-              tabs={[
-                ...(byCategory.length > 1 ? [{ title: 'By category', icon: Tags, rows: byCategory }] : []),
-                ...(byVendor.length > 1 ? [{ title: 'By vendor', icon: Store, rows: byVendor }] : []),
-              ]}
-              grandTotal={totals.total}
-            />
-          )}
+          {(() => {
+            const tabs: AnalyticsTab[] = [
+              ...(byCategory.length > 1 ? [{ kind: 'breakdown' as const, title: 'By category', icon: Tags, rows: byCategory }] : []),
+              ...(byVendor.length > 1 ? [{ kind: 'breakdown' as const, title: 'By vendor', icon: Store, rows: byVendor }] : []),
+              ...(paidMonths > 1 ? [{ kind: 'timeline' as const, title: 'Over time', icon: TrendingUp, items }] : []),
+            ];
+            return tabs.length > 0 ? (
+              <Analytics tabs={tabs} grandTotal={totals.total} onOpenItem={setEditingItem} />
+            ) : null;
+          })()}
 
           <div className="li-table-wrap rise rise-3">
             <table className="li-table">
@@ -396,21 +409,35 @@ export default function LedgerPage() {
 }
 
 interface BreakdownTab {
+  kind: 'breakdown';
   title: string;
   icon: LucideIcon;
   rows: { label: string; total: number }[];
 }
 
-// One panel, switchable between the available breakdown dimensions (by category
-// / by vendor). Both dimensions sum to the same grand total, shown once.
-function Analytics({ tabs, grandTotal }: { tabs: BreakdownTab[]; grandTotal: number }) {
+interface TimelineTab {
+  kind: 'timeline';
+  title: string;
+  icon: LucideIcon;
+  items: LineItem[];
+}
+
+type AnalyticsTab = BreakdownTab | TimelineTab;
+
+// One panel, switchable between the available analytics dimensions: cost
+// breakdowns (by category / by vendor) and spend over time. The header total is
+// the project grand total, shown once for every view.
+function Analytics({
+  tabs,
+  grandTotal,
+  onOpenItem,
+}: {
+  tabs: AnalyticsTab[];
+  grandTotal: number;
+  onOpenItem?: (item: LineItem) => void;
+}) {
   const [active, setActive] = useState(0);
   const cur = tabs[active] ?? tabs[0];
-  const pct = (v: number) => (grandTotal > 0 ? (v / grandTotal) * 100 : 0);
-
-  // Color each slice by rank (rows arrive sorted high → low), so the biggest
-  // costs get the leading palette hues and the segmented bar reads top-down.
-  const colored = cur.rows.map((r, i) => ({ ...r, color: CATEGORY_COLORS[i % CATEGORY_COLORS.length] }));
 
   return (
     <div className="breakdown breakdown-panel rise rise-2">
@@ -435,6 +462,25 @@ function Analytics({ tabs, grandTotal }: { tabs: BreakdownTab[]; grandTotal: num
         <span className="breakdown-total">{formatAmount(grandTotal)}</span>
       </div>
 
+      {cur.kind === 'timeline' ? (
+        <SpendTimeline items={cur.items} onOpenItem={onOpenItem} />
+      ) : (
+        <Breakdown rows={cur.rows} grandTotal={grandTotal} />
+      )}
+    </div>
+  );
+}
+
+// Cost-share view: a segmented proportion bar plus one row per slice.
+function Breakdown({ rows, grandTotal }: { rows: { label: string; total: number }[]; grandTotal: number }) {
+  const pct = (v: number) => (grandTotal > 0 ? (v / grandTotal) * 100 : 0);
+
+  // Color each slice by rank (rows arrive sorted high → low), so the biggest
+  // costs get the leading palette hues and the segmented bar reads top-down.
+  const colored = rows.map((r, i) => ({ ...r, color: CATEGORY_COLORS[i % CATEGORY_COLORS.length] }));
+
+  return (
+    <>
       <div className="breakdown-stack" role="presentation">
         {colored.map(r => (
           <span
@@ -460,6 +506,6 @@ function Analytics({ tabs, grandTotal }: { tabs: BreakdownTab[]; grandTotal: num
           </div>
         ))}
       </div>
-    </div>
+    </>
   );
 }
