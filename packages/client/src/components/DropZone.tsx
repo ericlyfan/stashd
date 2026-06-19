@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowDownToLine, FileStack } from 'lucide-react';
+import { SUPPORTED_EXTENSIONS } from '@stashd/shared';
 import { useStore } from '../store';
 
-const ACCEPT = '.pdf,.jpg,.jpeg,.png,.heic,.heif';
+const ACCEPT = SUPPORTED_EXTENSIONS.map(ext => `.${ext}`).join(',');
+const FORMAT_LABEL = 'PDF · images · Office · email';
 
 /**
  * Inline drop tray for the inbox, plus a window-level drag curtain so files
@@ -54,7 +56,7 @@ export function GlobalDropCurtain() {
     <div className="drop-curtain">
       <div className="plate">
         <h2>Release to stash</h2>
-        <p>PDF · JPG · PNG · HEIC — up to 50 MB</p>
+        <p>{FORMAT_LABEL} — up to 50 MB</p>
       </div>
     </div>
   );
@@ -98,7 +100,7 @@ export function DropTray() {
       </div>
       <div className="dz-formats">
         <FileStack size={11} style={{ verticalAlign: '-1px', marginRight: 6 }} />
-        PDF · JPG · PNG · HEIC · max 50 MB · drop several at once
+        {FORMAT_LABEL} · max 50 MB · drop several at once
       </div>
     </div>
   );

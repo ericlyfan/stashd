@@ -3,7 +3,7 @@ import { basename } from 'path';
 import { Category, ClassificationResult, DocumentInput } from '@stashd/shared';
 import { ModelProvider } from '../providers/ModelProvider';
 import { buildCustomCategory, slugsLookAlike } from './categoryStyle';
-import { extractPdfText, truncateText } from './textExtraction';
+import { extractText, truncateText } from './textExtraction';
 
 export interface ClassifyOutcome {
   classification: ClassificationResult;
@@ -51,7 +51,7 @@ export class ClassificationService {
 
     const extractedText = input.isImage
       ? classification.transcription && truncateText(classification.transcription)
-      : input.content && input.content !== '(Could not extract PDF text)'
+      : input.content && input.content !== '(Could not extract document text)'
         ? truncateText(input.content)
         : undefined;
     return { classification, extractedText: extractedText || undefined };
@@ -87,9 +87,10 @@ export class ClassificationService {
   private async buildInput(filePath: string, mimeType: string): Promise<DocumentInput> {
     const filename = basename(filePath);
 
-    if (mimeType === 'application/pdf') {
-      const text = await extractPdfText(filePath);
-      return { filename, mimeType, content: text ?? '(Could not extract PDF text)', isImage: false };
+    // Non-image types are read for their text; the model classifies from that.
+    if (!mimeType.startsWith('image/')) {
+      const text = await extractText(filePath, mimeType);
+      return { filename, mimeType, content: text ?? '(Could not extract document text)', isImage: false };
     }
 
     if (mimeType === 'image/heic' || mimeType === 'image/heif') {

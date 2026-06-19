@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Copy, ImageOff, Plus, Sparkles, Trash2, X } from 'lucide-react';
+import { Copy, FileText, ImageOff, Plus, Sparkles, Trash2, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { QueueItem, useStore } from '../store';
 import { nameFromSlug, slugify } from '../lib/categoryMeta';
-import { isHeicMime } from '../lib/format';
+import { fileKindLabel, isHeicMime, isImageMime } from '../lib/format';
 import { ConfidenceMeter } from './Stamps';
 import TagEditor from './TagEditor';
 import { PdfView } from './Viewer';
@@ -23,7 +23,20 @@ function Preview({ item }: { item: QueueItem }) {
       </div>
     );
   }
-  return <img src={item.previewUrl} alt={item.name} />;
+  if (isImageMime(item.mime)) {
+    return <img src={item.previewUrl} alt={item.name} />;
+  }
+  // Documents/spreadsheets/emails aren't previewed inline in the review slip —
+  // the AI has already read them; the full viewer lives on the document page.
+  return (
+    <div className="empty" style={{ padding: '40px 16px' }}>
+      <div className="e-icon">
+        <FileText size={20} strokeWidth={1.6} />
+      </div>
+      <h3>{fileKindLabel(item.mime)} document</h3>
+      <p>The AI read it in full. Open it from the stash for the complete view.</p>
+    </div>
+  );
 }
 
 /**

@@ -75,6 +75,14 @@ export function deleteDocument(id: string): Promise<void> {
   return req<void>(`/documents/${id}`, { method: 'DELETE' });
 }
 
+export function batchDeleteDocuments(ids: string[]): Promise<{ deleted: number }> {
+  return req<{ deleted: number }>('/documents', {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids }),
+  });
+}
+
 export interface FilePayload {
   category: string;
   subcategory?: string;
@@ -88,8 +96,12 @@ export interface FilePayload {
   flagForLater?: boolean;
 }
 
-export function fileDocument(jobId: string, data: FilePayload): Promise<Document> {
-  return req<Document>(`/documents/file/${jobId}`, {
+// The server tacks on `attachmentsSpawned` when an email fans its attachments
+// out into their own (backgrounded) documents.
+export type FiledDocument = Document & { attachmentsSpawned?: number };
+
+export function fileDocument(jobId: string, data: FilePayload): Promise<FiledDocument> {
+  return req<FiledDocument>(`/documents/file/${jobId}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),

@@ -7,11 +7,21 @@ import { StoreService } from "../services/StoreService";
 import { FileService } from "../services/FileService";
 import { ClassificationService } from "../services/ClassificationService";
 import { EmbeddingService } from "../services/EmbeddingService";
-import { CategoryId, Document, mimeFromExtension, SSEEvent, UploadResponse } from "@stashd/shared";
+import {
+  CategoryId,
+  Document,
+  isSupportedFilename,
+  mimeFromExtension,
+  SSEEvent,
+  SUPPORTED_EXTENSIONS,
+  UploadResponse,
+} from "@stashd/shared";
 import { buildCustomCategory, slugifyCategory } from "../services/categoryStyle";
-import { extractPdfText, hashBuffer } from "../services/textExtraction";
+import { extractText, hashBuffer } from "../services/textExtraction";
+import { EmailAttachment, parseEmail } from "../services/emailParse";
 
-const ALLOWED_MIMES = ["application/pdf", "image/jpeg", "image/png", "image/heic", "image/heif"];
+const EMAIL_MIMES = ["message/rfc822", "application/vnd.ms-outlook"];
+
 const MAX_SIZE_BYTES = 50 * 1024 * 1024;
 
 // Job ids are server-generated UUIDs; anything else in a :jobId param is a
@@ -29,17 +39,75 @@ export function createDocumentRoutes(services: Services): Router {
   const { store, fileService, classificationService, embeddingService } = services;
   const router = Router();
 
+  // File one email attachment as its own document: classify it independently
+  // (reusing the same model pipeline as a normal upload) and file it flagged
+  // for review, noting which email it came from. Runs in the background so
+  // filing the parent email never waits on the model.
+  async function spinOffAttachment(att: EmailAttachment, parent: Document): Promise<void> {
+    const jobId = uuidv4();
+    const dir = await fileService.createTempDir(jobId);
+    const safeName = basename(att.filename);
+    await writeFile(join(dir, safeName), att.content);
+    const tempPath = join(dir, safeName);
+    const mimeType = mimeFromExtension(safeName);
+
+    const { classification, extractedText } = await classificationService.classify(
+      tempPath,
+      mimeType,
+      store.getCategories(),
+    );
+
+    const categoryId = slugifyCategory(classification.category);
+    if (!store.getCategory(categoryId)) {
+      store.addCategory(buildCustomCategory(categoryId));
+    }
+
+    const id = uuidv4();
+    const storagePath = await fileService.moveToDocuments(jobId, categoryId, id, safeName);
+    const now = new Date().toISOString();
+    const doc: Document = {
+      id,
+      filename: basename(storagePath),
+      originalName: safeName,
+      storagePath,
+      fileType: mimeType,
+      fileSize: att.content.length,
+      category: categoryId as CategoryId,
+      subcategory: classification.subcategory,
+      tags: Array.isArray(classification.tags) ? classification.tags : [],
+      summary: classification.summary ?? "",
+      dateExtracted: classification.date,
+      amount: classification.amount,
+      vendor: classification.vendor,
+      confidenceScore: classification.confidence ?? 0,
+      // Flagged so the user gets a second look at auto-extracted attachments.
+      status: "pending",
+      notes: `Attachment from email “${parent.originalName}”.`,
+      extractedText,
+      contentHash: hashBuffer(att.content),
+      createdAt: now,
+      updatedAt: now,
+    };
+    store.addDocument(doc);
+    void embeddingService.indexDocument(doc).catch((err: unknown) => {
+      console.warn(`Embedding failed for ${doc.originalName}:`, (err as Error).message);
+    });
+  }
+
   const upload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: MAX_SIZE_BYTES },
     // Browsers send multipart filenames as raw UTF-8 bytes; busboy's default
     // is latin1, which turns CJK names into mojibake.
     defParamCharset: "utf8",
+    // Validate by extension, not the browser-reported mime: browsers send
+    // inconsistent (often empty/octet-stream) mimes for office and email
+    // formats, and the whole pipeline keys off the extension anyway.
     fileFilter: (_req, file, cb) => {
-      if (ALLOWED_MIMES.includes(file.mimetype)) {
+      if (isSupportedFilename(file.originalname)) {
         cb(null, true);
       } else {
-        cb(new Error(`Unsupported file type: ${file.mimetype}`));
+        cb(new Error(`Unsupported file type. Accepted: ${SUPPORTED_EXTENSIONS.join(", ")}`));
       }
     },
   });
@@ -180,11 +248,11 @@ export function createDocumentRoutes(services: Services): Router {
     const fileSize = await fileService.getFileSize(tempPath);
     const contentHash = hashBuffer(await readFile(tempPath));
 
-    // Text captured at classify time (sidecar file); last-resort re-parse
-    // for PDFs whose sidecar is missing.
+    // Text captured at classify time (sidecar file); last-resort re-extract
+    // for any text-bearing type whose sidecar is missing (images have none).
     let extractedText = await fileService.readJobText(jobId);
-    if (!extractedText && mimeType === "application/pdf") {
-      extractedText = await extractPdfText(tempPath);
+    if (!extractedText) {
+      extractedText = await extractText(tempPath, mimeType);
     }
     await fileService.deleteJobText(jobId);
 
@@ -221,7 +289,22 @@ export function createDocumentRoutes(services: Services): Router {
       console.warn(`Embedding failed for ${doc.originalName}:`, (err as Error).message);
     });
 
-    res.json(doc);
+    // Emails fan out: each supported attachment becomes its own document,
+    // classified independently and filed flagged. Backgrounded so the email's
+    // response returns immediately; the client refreshes to pick them up.
+    let attachmentsSpawned = 0;
+    if (EMAIL_MIMES.includes(mimeType)) {
+      const email = await parseEmail(fileService.absolutePath(storagePath));
+      const supported = (email?.attachments ?? []).filter((a) => isSupportedFilename(a.filename));
+      attachmentsSpawned = supported.length;
+      for (const att of supported) {
+        void spinOffAttachment(att, doc).catch((err: unknown) => {
+          console.warn(`Attachment spin-off failed for ${att.filename}:`, (err as Error).message);
+        });
+      }
+    }
+
+    res.json({ ...doc, attachmentsSpawned });
   });
 
   // GET /api/documents
@@ -278,6 +361,28 @@ export function createDocumentRoutes(services: Services): Router {
       updated++;
     }
     res.json({ updated });
+  });
+
+  // DELETE /api/documents — batch delete. Declared on "/" (not "/:id") so it
+  // never shadows the single-document delete; mirrors the per-id cleanup
+  // (file + row + vector index) for each id, skipping ones already gone.
+  router.delete("/", async (req, res) => {
+    const { ids } = req.body as { ids?: unknown };
+    if (!Array.isArray(ids) || ids.length === 0 || !ids.every((id) => typeof id === "string")) {
+      return res.status(400).json({ error: "ids must be a non-empty array of document ids" });
+    }
+    let deleted = 0;
+    for (const id of ids as string[]) {
+      const doc = store.getDocument(id);
+      if (!doc) continue;
+      await fileService.deleteDocument(doc.storagePath).catch((err: unknown) => {
+        console.warn(`Could not delete file for document ${id}:`, (err as Error).message);
+      });
+      store.removeDocument(id);
+      embeddingService.removeDocument(id);
+      deleted++;
+    }
+    res.json({ deleted });
   });
 
   // GET /api/documents/:id

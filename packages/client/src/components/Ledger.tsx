@@ -1,9 +1,11 @@
 import { Link } from 'react-router-dom';
+import { Check } from 'lucide-react';
 import { Document, SearchHit } from '@stashd/shared';
 import { useStore } from '../store';
 import { formatAmount, relTime } from '../lib/format';
 import { categoryIcon } from '../lib/categoryMeta';
 import { CategoryStamp, StatusStamp } from './Stamps';
+import { useSelection } from './Selection';
 
 // A category-colored icon badge at the head of each row. Unlike a thumbnail it
 // always renders (no async image load) and gives a fast, color-coded way to
@@ -22,14 +24,15 @@ function RowMark({ doc }: { doc: Document }) {
 
 export function LedgerRow({ doc, showCategory = true }: { doc: Document; showCategory?: boolean }) {
   const { categoryById } = useStore();
+  const sel = useSelection();
+  const selected = sel.isSelected(doc.id);
   const snippet = (doc as SearchHit).snippet;
-  return (
-    <Link
-      to={`/doc/${doc.id}`}
-      className="ledger-row"
-      draggable
-      onDragStart={e => e.dataTransfer.setData('application/x-stashd-docs', JSON.stringify([doc.id]))}
-    >
+
+  const inner = (
+    <>
+      {sel.selectMode && (
+        <span className={`select-check${selected ? ' on' : ''}`}>{selected && <Check size={13} strokeWidth={3} />}</span>
+      )}
       <RowMark doc={doc} />
       <div className="row-main">
         <div className="row-title">{doc.originalName}</div>
@@ -47,6 +50,30 @@ export function LedgerRow({ doc, showCategory = true }: { doc: Document; showCat
           doc.summary && <div className="row-summary">{doc.summary}</div>
         )}
       </div>
+    </>
+  );
+
+  if (sel.selectMode) {
+    return (
+      <div
+        className={`ledger-row selectable${selected ? ' selected' : ''}`}
+        role="button"
+        aria-pressed={selected}
+        onClick={() => sel.toggle(doc.id)}
+      >
+        {inner}
+      </div>
+    );
+  }
+
+  return (
+    <Link
+      to={`/doc/${doc.id}`}
+      className="ledger-row"
+      draggable
+      onDragStart={e => e.dataTransfer.setData('application/x-stashd-docs', JSON.stringify([doc.id]))}
+    >
+      {inner}
     </Link>
   );
 }

@@ -1,8 +1,10 @@
 import { createHash } from 'crypto';
 import { readFile } from 'fs/promises';
 import pdfParse from 'pdf-parse';
+import { extensionOf } from '@stashd/shared';
 import { StoreService } from './StoreService';
 import { FileService } from './FileService';
+import { emailToText, parseEmail } from './emailParse';
 
 // Keep stored text bounded: enough for search, not the whole book.
 export const MAX_EXTRACTED_CHARS = 20_000;
@@ -39,9 +41,71 @@ export async function extractPdfText(filePath: string): Promise<string | undefin
   }
 }
 
+async function extractPlainText(filePath: string): Promise<string | undefined> {
+  try {
+    return truncateText(await readFile(filePath, 'utf8'));
+  } catch {
+    return undefined;
+  }
+}
+
+async function extractDocxText(filePath: string): Promise<string | undefined> {
+  try {
+    const mammoth = (await import('mammoth')).default;
+    const { value } = await mammoth.extractRawText({ path: filePath });
+    return truncateText(value);
+  } catch {
+    return undefined;
+  }
+}
+
+// Flatten every sheet to text: one "=== Sheet ===" header per sheet, then its
+// rows as CSV. Good enough for search and for the model to read structure.
+async function extractSpreadsheetText(filePath: string): Promise<string | undefined> {
+  try {
+    // Under Node16 CJS interop the API lands on `.default`, not the namespace.
+    const mod = await import('xlsx');
+    const XLSX = ((mod as { default?: typeof import('xlsx') }).default ?? mod);
+    const wb = XLSX.readFile(filePath, { cellDates: true });
+    const parts = wb.SheetNames.map(name => {
+      const csv = XLSX.utils.sheet_to_csv(wb.Sheets[name]);
+      return wb.SheetNames.length > 1 ? `=== ${name} ===\n${csv}` : csv;
+    });
+    return truncateText(parts.join('\n\n'));
+  } catch {
+    return undefined;
+  }
+}
+
+// Pull searchable text out of a file by extension. Images carry no extractable
+// text here (their text comes from the model's transcription at classify
+// time), so they return undefined. New text-bearing formats plug in by adding
+// a case. Never throws — extraction failures degrade to "no text".
+export async function extractText(filePath: string, _mime: string): Promise<string | undefined> {
+  switch (extensionOf(filePath)) {
+    case 'pdf':
+      return extractPdfText(filePath);
+    case 'txt':
+    case 'md':
+    case 'csv':
+      return extractPlainText(filePath);
+    case 'docx':
+      return extractDocxText(filePath);
+    case 'xlsx':
+      return extractSpreadsheetText(filePath);
+    case 'eml':
+    case 'msg': {
+      const email = await parseEmail(filePath);
+      return email ? truncateText(emailToText(email)) : undefined;
+    }
+    default:
+      return undefined;
+  }
+}
+
 // One-time catch-up for documents filed before extractedText / contentHash
-// existed. Text is PDFs only — image text needs a model call, which happens
-// at classify time. Hashes cover every file type.
+// existed. Text covers every text-bearing type via extractText — image text
+// needs a model call, which happens at classify time. Hashes cover every file.
 export async function backfillDerivedFields(
   store: StoreService,
   fileService: FileService,
@@ -53,8 +117,8 @@ export async function backfillDerivedFields(
     const repairedName = repairMojibakeName(doc.originalName);
     if (repairedName) updates.originalName = repairedName;
 
-    if (doc.extractedText === undefined && doc.fileType === 'application/pdf') {
-      const text = await extractPdfText(fileService.absolutePath(doc.storagePath));
+    if (doc.extractedText === undefined) {
+      const text = await extractText(fileService.absolutePath(doc.storagePath), doc.fileType);
       if (text) updates.extractedText = text;
     }
     if (doc.contentHash === undefined) {

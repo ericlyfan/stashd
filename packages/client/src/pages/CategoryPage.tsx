@@ -7,6 +7,7 @@ import EditDrawerDialog from '../components/EditDrawerDialog';
 import { Ledger } from '../components/Ledger';
 import { DocGrid } from '../components/DocGrid';
 import { ViewToggle, useViewMode } from '../components/ViewToggle';
+import { SelectButton, SelectionBar, SelectionProvider } from '../components/Selection';
 import ConfirmDialog from '../components/ConfirmDialog';
 import EmptyState from '../components/EmptyState';
 import { categoryIcon, nameFromSlug } from '../lib/categoryMeta';
@@ -54,6 +55,7 @@ export default function CategoryPage() {
   );
 
   return (
+    <SelectionProvider>
     <div className="page">
       <header className="page-head rise">
         <div className="page-eyebrow" style={{ color }}>
@@ -92,6 +94,7 @@ export default function CategoryPage() {
 
       <div className="sort-row rise rise-1">
         <div style={{ flex: 1 }} />
+        <SelectButton />
         <ViewToggle mode={view} onChange={setView} />
       </div>
 
@@ -119,6 +122,9 @@ export default function CategoryPage() {
           onCancel={() => setConfirming(false)}
         />
       )}
+
+      <SelectionBar docs={list} />
     </div>
+    </SelectionProvider>
   );
 }

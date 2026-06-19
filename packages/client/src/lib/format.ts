@@ -48,10 +48,40 @@ export function isHeicMime(mime: string): boolean {
   return mime === "image/heic" || mime === "image/heif";
 }
 
+const KIND_LABELS: Record<string, string> = {
+  "application/pdf": "PDF",
+  "image/jpeg": "JPEG",
+  "image/png": "PNG",
+  "image/webp": "WEBP",
+  "text/plain": "TXT",
+  "text/markdown": "MD",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "DOCX",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "XLSX",
+  "text/csv": "CSV",
+  "message/rfc822": "EML",
+  "application/vnd.ms-outlook": "MSG",
+};
+
+const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+const EMAIL_MIMES = ["message/rfc822", "application/vnd.ms-outlook"];
+
 export function fileKindLabel(mime: string): string {
-  if (mime === "application/pdf") return "PDF";
-  if (mime === "image/jpeg") return "JPEG";
-  if (mime === "image/png") return "PNG";
+  if (KIND_LABELS[mime]) return KIND_LABELS[mime];
   if (isHeicMime(mime)) return "HEIC";
   return mime.split("/").pop()?.toUpperCase() ?? "FILE";
+}
+
+// Which viewer branch renders a given file type. Drives the Viewer's dispatch
+// and the grid's thumbnail fallback. Grows as new previewable types land.
+export type ViewerKind = "pdf" | "image" | "text" | "html" | "table" | "email";
+
+export function viewerKind(mime: string): ViewerKind | null {
+  if (mime === "application/pdf") return "pdf";
+  if (mime === "text/plain" || mime === "text/markdown") return "text";
+  if (mime === DOCX_MIME) return "html";
+  if (mime === XLSX_MIME || mime === "text/csv") return "table";
+  if (EMAIL_MIMES.includes(mime)) return "email";
+  if (isImageMime(mime) && !isHeicMime(mime)) return "image";
+  return null;
 }

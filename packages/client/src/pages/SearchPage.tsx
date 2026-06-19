@@ -6,6 +6,7 @@ import { listDocuments } from '../api';
 import { Ledger } from '../components/Ledger';
 import { DocGrid } from '../components/DocGrid';
 import { ViewToggle, useViewMode } from '../components/ViewToggle';
+import { SelectButton, SelectionBar, SelectionProvider } from '../components/Selection';
 import EmptyState from '../components/EmptyState';
 
 export default function SearchPage() {
@@ -41,6 +42,7 @@ export default function SearchPage() {
   );
 
   return (
+    <SelectionProvider>
     <div className="page">
       <header className="page-head rise">
         <div className="page-eyebrow">Search</div>
@@ -57,6 +59,7 @@ export default function SearchPage() {
 
       <div className="sort-row rise rise-1">
         <div style={{ flex: 1 }} />
+        <SelectButton />
         <ViewToggle mode={view} onChange={setView} />
       </div>
 
@@ -71,6 +74,9 @@ export default function SearchPage() {
           </Ledger>
         )}
       </div>
+
+      <SelectionBar docs={results ?? []} />
     </div>
+    </SelectionProvider>
   );
 }

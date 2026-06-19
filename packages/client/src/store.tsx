@@ -7,7 +7,15 @@ import {
   useRef,
   useState,
 } from 'react';
-import { ClassificationResult, Document, ProjectSummary, UploadResponse } from '@stashd/shared';
+import {
+  ClassificationResult,
+  Document,
+  isSupportedFilename,
+  mimeFromExtension,
+  ProjectSummary,
+  SUPPORTED_EXTENSIONS,
+  UploadResponse,
+} from '@stashd/shared';
 import {
   CategoryWithCount,
   FilePayload,
@@ -50,21 +58,7 @@ export interface Toast {
   text: string;
 }
 
-const ALLOWED_EXT = /\.(pdf|jpe?g|png|heic|heif)$/i;
 const MAX_SIZE = 50 * 1024 * 1024;
-
-function mimeFromName(name: string, fallback: string): string {
-  const ext = name.split('.').pop()?.toLowerCase() ?? '';
-  const map: Record<string, string> = {
-    pdf: 'application/pdf',
-    jpg: 'image/jpeg',
-    jpeg: 'image/jpeg',
-    png: 'image/png',
-    heic: 'image/heic',
-    heif: 'image/heif',
-  };
-  return map[ext] ?? fallback;
-}
 
 interface StoreState {
   docs: Document[];
@@ -200,8 +194,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const addFiles = useCallback(
     (files: FileList | File[]) => {
       for (const file of Array.from(files)) {
-        if (!ALLOWED_EXT.test(file.name)) {
-          notify(`“${file.name}” isn’t a supported type (PDF, JPG, PNG, HEIC)`, 'err');
+        if (!isSupportedFilename(file.name)) {
+          notify(`“${file.name}” isn’t a supported type (${SUPPORTED_EXTENSIONS.join(', ')})`, 'err');
           continue;
         }
         if (file.size > MAX_SIZE) {
@@ -210,7 +204,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         }
 
         const id = `q${nextLocalId++}`;
-        const mime = mimeFromName(file.name, file.type || 'application/octet-stream');
+        const mime = mimeFromExtension(file.name, file.type || 'application/octet-stream');
         const item: QueueItem = {
           id,
           file,
@@ -266,6 +260,14 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         const next = queue.find(q => q.id !== id && q.status === 'ready');
         if (next) setReviewItemId(next.id);
         await refresh();
+        // Email attachments are classified + filed in the background; nudge a
+        // couple of refreshes so they appear without a manual reload.
+        if (doc.attachmentsSpawned && doc.attachmentsSpawned > 0) {
+          const n = doc.attachmentsSpawned;
+          notify(`Filing ${n} attachment${n === 1 ? '' : 's'} from this email — flagged for review`);
+          setTimeout(() => void refresh(), 2500);
+          setTimeout(() => void refresh(), 6000);
+        }
         return doc;
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Filing failed';

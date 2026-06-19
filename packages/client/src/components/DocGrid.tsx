@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { Check } from 'lucide-react';
 import { Document, SearchHit } from '@stashd/shared';
 import { useStore } from '../store';
 import { fileUrl } from '../api';
 import { formatAmount, isHeicMime, isImageMime, relTime } from '../lib/format';
 import { categoryIcon } from '../lib/categoryMeta';
 import { CategoryStamp, StatusStamp } from './Stamps';
+import { useSelection } from './Selection';
 import { pdfThumbnail } from '../lib/thumbs';
 
 // Resolves a previewable image source for a document, lazily rendering PDF
@@ -77,20 +79,21 @@ export function Thumb({ doc, iconSize = 38 }: { doc: Document; iconSize?: number
 
 export function DocCard({ doc, showCategory = true }: { doc: Document; showCategory?: boolean }) {
   const { categoryById } = useStore();
+  const sel = useSelection();
+  const selected = sel.isSelected(doc.id);
   const snippet = (doc as SearchHit).snippet;
-  return (
-    <Link
-      to={`/doc/${doc.id}`}
-      className="doc-card"
-      draggable
-      onDragStart={e => e.dataTransfer.setData('application/x-stashd-docs', JSON.stringify([doc.id]))}
-    >
+
+  const inner = (
+    <>
       <div className="doc-card-thumb">
         <Thumb doc={doc} />
         {doc.status === 'pending' && (
           <span className="doc-card-flag">
             <StatusStamp status="pending" />
           </span>
+        )}
+        {sel.selectMode && (
+          <span className={`select-check${selected ? ' on' : ''}`}>{selected && <Check size={13} strokeWidth={3} />}</span>
         )}
       </div>
       <div className="doc-card-body">
@@ -104,6 +107,30 @@ export function DocCard({ doc, showCategory = true }: { doc: Document; showCateg
           <span className="row-meta">{relTime(doc.createdAt)}</span>
         </div>
       </div>
+    </>
+  );
+
+  if (sel.selectMode) {
+    return (
+      <div
+        className={`doc-card selectable${selected ? ' selected' : ''}`}
+        role="button"
+        aria-pressed={selected}
+        onClick={() => sel.toggle(doc.id)}
+      >
+        {inner}
+      </div>
+    );
+  }
+
+  return (
+    <Link
+      to={`/doc/${doc.id}`}
+      className="doc-card"
+      draggable
+      onDragStart={e => e.dataTransfer.setData('application/x-stashd-docs', JSON.stringify([doc.id]))}
+    >
+      {inner}
     </Link>
   );
 }

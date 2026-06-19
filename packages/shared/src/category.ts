@@ -27,6 +27,11 @@ export const COLOR_PALETTE = [
   "#ec4899", "#14b8a6",
 ];
 
+// The single source of truth for which file types Stash'd accepts and what
+// mime each maps to. Acceptance (client + server gates) is derived from this
+// map's keys, so adding a type here is what makes it uploadable. Browser-
+// reported mimes are unreliable for office/email formats, so the whole
+// pipeline resolves mime from the extension instead.
 const MIME_BY_EXT: Record<string, string> = {
   pdf: "application/pdf",
   jpg: "image/jpeg",
@@ -34,9 +39,27 @@ const MIME_BY_EXT: Record<string, string> = {
   png: "image/png",
   heic: "image/heic",
   heif: "image/heif",
+  webp: "image/webp",
+  txt: "text/plain",
+  md: "text/markdown",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  csv: "text/csv",
+  eml: "message/rfc822",
+  msg: "application/vnd.ms-outlook",
 };
 
 export function mimeFromExtension(filename: string, fallback = "application/octet-stream"): string {
-  const ext = filename.split(".").pop()?.toLowerCase() ?? "";
-  return MIME_BY_EXT[ext] ?? fallback;
+  return MIME_BY_EXT[extensionOf(filename)] ?? fallback;
+}
+
+export function extensionOf(filename: string): string {
+  return filename.split(".").pop()?.toLowerCase() ?? "";
+}
+
+// Every extension Stash'd accepts, derived from the mime map.
+export const SUPPORTED_EXTENSIONS = Object.keys(MIME_BY_EXT);
+
+export function isSupportedFilename(filename: string): boolean {
+  return SUPPORTED_EXTENSIONS.includes(extensionOf(filename));
 }

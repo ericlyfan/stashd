@@ -1478,6 +1478,225 @@ a {
   min-height: 420px;
 }
 
+/* Full-screen viewer. The shell is a layout no-op (display:contents) until
+   toggled, then becomes a fixed overlay filling the window. position:fixed
+   lifts it cleanly out of the document-page grid without a remount, so the
+   PDF zoom / scroll position / selected spreadsheet tab all carry over. */
+.viewer-shell {
+  display: contents;
+}
+
+.viewer-fullscreen {
+  display: flex;
+  flex-direction: column;
+  position: fixed;
+  inset: 0;
+  z-index: 500;
+  background: var(--paper-deep);
+  animation: viewer-fs-in 160ms ease;
+}
+
+@keyframes viewer-fs-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Fill the viewport instead of the fixed pane height when full screen. */
+.viewer-fullscreen .viewer-body {
+  height: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+/* A touch more breathing room on the big surface. */
+.viewer-fullscreen .viewer-bar {
+  padding: 10px 18px;
+}
+
+/* Text & markdown viewer: a paper "sheet" the document text sits on. */
+.doc-text-sheet {
+  max-width: 760px;
+  margin: 0 auto;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 2px 14px rgba(28, 24, 20, 0.16);
+  padding: 38px 44px;
+}
+
+.doc-plain {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.doc-md {
+  font-size: 14.5px;
+  line-height: 1.7;
+  color: var(--ink);
+}
+
+.doc-md h1,
+.doc-md h2,
+.doc-md h3 {
+  font-family: var(--serif, inherit);
+  line-height: 1.3;
+  margin: 1.3em 0 0.5em;
+}
+
+.doc-md h1 { font-size: 1.5em; }
+.doc-md h2 { font-size: 1.28em; }
+.doc-md h3 { font-size: 1.1em; }
+.doc-md > :first-child { margin-top: 0; }
+.doc-md p { margin: 0 0 0.9em; }
+.doc-md ul { margin: 0 0 0.9em; padding-left: 1.3em; }
+.doc-md li { margin: 0.2em 0; }
+
+.doc-md code,
+.doc-plain code {
+  font-family: var(--mono);
+  font-size: 0.88em;
+  background: var(--paper-2, rgba(28, 24, 20, 0.06));
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+/* .docx rendered as HTML (mammoth). */
+.doc-html {
+  font-size: 14.5px;
+  line-height: 1.7;
+  color: var(--ink);
+}
+
+.doc-html > :first-child { margin-top: 0; }
+.doc-html p { margin: 0 0 0.9em; }
+.doc-html h1, .doc-html h2, .doc-html h3 { line-height: 1.3; margin: 1.3em 0 0.5em; }
+.doc-html img { max-width: 100%; height: auto; }
+.doc-html a { color: var(--wax); }
+
+.doc-html table {
+  border-collapse: collapse;
+  margin: 1em 0;
+  font-size: 0.94em;
+}
+
+.doc-html td, .doc-html th {
+  border: 1px solid var(--line);
+  padding: 5px 9px;
+}
+
+/* .xlsx / .csv table viewer. */
+.sheet-tabs {
+  display: flex;
+  gap: 4px;
+  margin-right: 8px;
+  overflow-x: auto;
+}
+
+.sheet-tab {
+  all: unset;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  padding: 3px 9px;
+  border-radius: 5px;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+.sheet-tab:hover { background: rgba(28, 24, 20, 0.06); }
+.sheet-tab.active { background: var(--wax); color: #fff; }
+
+.doc-table-wrap {
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+}
+
+.doc-table {
+  border-collapse: collapse;
+  font-size: 12.5px;
+  width: max-content;
+  min-width: 100%;
+}
+
+.doc-table th,
+.doc-table td {
+  border: 1px solid var(--line);
+  padding: 5px 10px;
+  text-align: left;
+  white-space: nowrap;
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.doc-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--paper-2, #f3efe7);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  z-index: 1;
+}
+
+.doc-table tbody tr:nth-child(even) { background: rgba(28, 24, 20, 0.025); }
+
+.doc-table-note {
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--ink-2);
+  border-top: 1px solid var(--line);
+}
+
+/* Email viewer header block. */
+.doc-email-head {
+  margin: 0 0 18px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  gap: 5px;
+}
+
+.doc-email-head > div {
+  display: grid;
+  grid-template-columns: 92px 1fr;
+  gap: 12px;
+  align-items: baseline;
+}
+
+.doc-email-head dt {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+
+.doc-email-head dd {
+  margin: 0;
+  font-size: 13.5px;
+  color: var(--ink);
+  word-break: break-word;
+}
+
+.doc-email-body {
+  font-family: inherit;
+  font-size: 14px;
+}
+
 .meta-card {
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -1767,6 +1986,124 @@ a {
   position: absolute;
   top: 8px;
   right: 8px;
+}
+
+/* ── Multi-select ─────────────────────────────────────────────────────── */
+.doc-card.selectable,
+.ledger-row.selectable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.doc-card.selected,
+.ledger-row.selected {
+  border-color: var(--wax);
+  box-shadow: inset 0 0 0 1px var(--wax);
+}
+
+.ledger-row.selected {
+  background: rgba(180, 58, 22, 0.06);
+}
+
+/* Check badge — absolutely placed over a card thumb, inline in a ledger row. */
+.select-check {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 2;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1.5px solid var(--ink-3);
+  background: var(--card-raised);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+}
+
+.select-check.on {
+  background: var(--wax);
+  border-color: var(--wax);
+}
+
+.ledger-row .select-check {
+  position: static;
+  flex: none;
+  width: 20px;
+  height: 20px;
+}
+
+/* Floating bulk-action bar. */
+.select-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 22px;
+  transform: translateX(-50%);
+  z-index: 400;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px 8px 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--card-raised);
+  box-shadow: 0 8px 30px rgba(28, 24, 20, 0.22);
+  min-width: 420px;
+  max-width: calc(100vw - 40px);
+  animation: viewer-fs-in 140ms ease;
+}
+
+.select-count {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.select-move {
+  position: relative;
+}
+
+.select-move-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+}
+
+.select-move-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  z-index: 2;
+  min-width: 210px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card-raised);
+  box-shadow: 0 10px 30px rgba(28, 24, 20, 0.22);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.select-move-menu button {
+  all: unset;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 10px;
+  border-radius: 7px;
+  font-size: 13px;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.select-move-menu button:hover {
+  background: rgba(28, 24, 20, 0.06);
 }
 
 .doc-card-body {

@@ -77,7 +77,7 @@ export default function InboxPage() {
       <div className="rise rise-3">
         <div className="sect">
           <h2>Fresh ink</h2>
-          {docs.length > 6 && <Link className="more" to="/all">View the full ledger →</Link>}
+          {docs.length > 6 && <Link className="more" to="/all">View all documents →</Link>}
         </div>
         <Ledger docs={recent} meta="">
           <EmptyState
