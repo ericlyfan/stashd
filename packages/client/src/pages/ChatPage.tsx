@@ -21,6 +21,8 @@ import {
   getConversation,
   listConversations,
   ChatMode,
+  CategoryWithCount,
+  ProjectSummary,
   sendChatMessage,
   setConversationPins,
   updateConversationMode,
@@ -334,25 +336,64 @@ const MODES: ModeMeta[] = [
 ];
 
 // Ground the example prompts in the actual stash so they're one click from a
-// real answer, not hypotheticals. Shared by the New Chat screen and the
-// in-thread empty state.
-function stashSuggestions(docs: Document[]): string[] {
+// real answer, not hypotheticals. Draws on documents, drawers and ledgers and
+// returns up to four; shared by the New Chat screen and the in-thread empty
+// state.
+function stashSuggestions(
+  docs: Document[],
+  categories: CategoryWithCount[],
+  projects: ProjectSummary[],
+): string[] {
+  if (docs.length === 0) {
+    return ['What kinds of documents can you read?', 'How do I add a document to my stash?'];
+  }
+
   const out: string[] = [];
+
+  // The most recently filed document, by real name.
   const newest = [...docs].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
   if (newest) out.push(`Summarize “${newest.originalName}”`);
+
+  // A real vendor you've actually paid.
   const priced = docs.find(d => d.vendor && d.amount);
   if (priced) out.push(`How much did I pay ${priced.vendor}?`);
-  out.push(
-    docs.length > 0 ? 'Which documents should I review or flag?' : 'What kinds of documents can you read?',
-  );
-  return out.slice(0, 3);
+
+  // Your flagged-for-review backlog.
+  const flagged = docs.filter(d => d.status === 'pending').length;
+  if (flagged > 0) {
+    out.push(`What are the ${flagged} ${flagged === 1 ? 'document' : 'documents'} I flagged for review?`);
+  }
+
+  // The fullest custom drawer.
+  const drawer = [...categories]
+    .filter(c => c.isCustom && c.documentCount > 0)
+    .sort((a, b) => b.documentCount - a.documentCount)[0];
+  if (drawer) out.push(`What’s in my ${drawer.name} drawer?`);
+
+  // An active ledger with real spend.
+  const project = projects.find(p => p.status === 'active' && p.totals.total > 0);
+  if (project) out.push(`How much have I spent on ${project.name}?`);
+
+  // The most common tag across the stash (only if it actually repeats).
+  const tagCounts = new Map<string, number>();
+  for (const d of docs) for (const t of d.tags) tagCounts.set(t, (tagCounts.get(t) ?? 0) + 1);
+  const topTag = [...tagCounts.entries()].sort((a, b) => b[1] - a[1])[0];
+  if (topTag && topTag[1] > 1) out.push(`Show me everything tagged “${topTag[0]}”`);
+
+  // A dependable catch-all to round out the set.
+  out.push('Which documents should I review or flag?');
+
+  return [...new Set(out)].slice(0, 4);
 }
 
 // ── Empty state ─────────────────────────────────────────────────────────────
 
 function EmptyThread({ onSuggest }: { onSuggest: (text: string) => void }) {
-  const { docs } = useStore();
-  const suggestions = useMemo(() => stashSuggestions(docs), [docs]);
+  const { docs, categories, projects } = useStore();
+  const suggestions = useMemo(
+    () => stashSuggestions(docs, categories, projects),
+    [docs, categories, projects],
+  );
 
   return (
     <div className="chat-empty">
@@ -459,7 +500,7 @@ interface StreamState {
 export default function ChatPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { docs, refresh, notify } = useStore();
+  const { docs, categories, projects, refresh, notify } = useStore();
 
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -635,7 +676,14 @@ export default function ChatPage() {
       ? stream.tools[stream.tools.length - 1].summary.toLowerCase()
       : 'reading the stash…';
 
-  const suggestions = useMemo(() => stashSuggestions(docs), [docs]);
+  const suggestions = useMemo(
+    () => stashSuggestions(docs, categories, projects),
+    [docs, categories, projects],
+  );
+
+  // Counts that ground the New Chat greeting in the actual stash.
+  const drawersInUse = categories.filter(c => c.documentCount > 0).length;
+  const flaggedCount = docs.filter(d => d.status === 'pending').length;
 
   // The centered "New Chat" screen when no conversation is open yet (nothing
   // sent). Once a message exists we render the normal thread instead.
@@ -725,8 +773,29 @@ export default function ChatPage() {
               </div>
               <h1>Ask the stash</h1>
               <p>
-                Answers come from your documents’ actual text, cited line by line. Choose how this
-                conversation should be answered — it’ll be remembered for the whole thread.
+                {docs.length === 0 ? (
+                  <>
+                    Your stash is empty for now — drop in a document and I’ll answer from its actual
+                    text, cited line by line.
+                  </>
+                ) : (
+                  <>
+                    Your stash holds{' '}
+                    <strong>
+                      {docs.length} {docs.length === 1 ? 'document' : 'documents'}
+                    </strong>{' '}
+                    across{' '}
+                    <strong>
+                      {drawersInUse} {drawersInUse === 1 ? 'drawer' : 'drawers'}
+                    </strong>
+                    {flaggedCount > 0 && (
+                      <>
+                        , <strong>{flaggedCount} flagged</strong> for review
+                      </>
+                    )}
+                    . Every answer is drawn from their actual text and cited line by line.
+                  </>
+                )}
               </p>
 
               <div className="chat-mode-pick" role="radiogroup" aria-label="Chat mode">

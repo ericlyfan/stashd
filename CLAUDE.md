@@ -339,7 +339,9 @@ not global.** Each conversation stores a `mode` (**Current** = `ChatService` / *
 `AgenticChatService`) — fixed when the chat is started and switchable later from the top bar (a
 `PATCH /chat/:id` persists it). The message route reads the *stored* conversation mode as the source of
 truth, so messages no longer carry `mode`. **The page always opens on a centered New Chat start
-screen** (greeting + two mode cards with blurbs + composer + grounded suggestions): the `/chat` route
+screen** (a **dynamic greeting** counting your documents/drawers/flagged, two mode cards with blurbs,
+composer, and **stash-grounded suggestions** drawn from your newest doc, a paid vendor, flagged
+backlog, fullest drawer, an active ledger and a recurring tag — `stashSuggestions`): the `/chat` route
 has no id, and both the sidebar "Ask the stash" link and the top-bar **New chat** button navigate
 there; sending the first message creates the conversation and transitions to the sheet. The mode picker
 seeds from a `stashd.chatMode` localStorage default (the last mode you chose) so new chats start where
