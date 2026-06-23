@@ -1,5 +1,6 @@
 import {
   Category,
+  ChatMode,
   ChatSSEEvent,
   Conversation,
   ConversationDetail,
@@ -21,6 +22,8 @@ export type { UploadResponse } from '@stashd/shared';
 export type { SearchHit } from '@stashd/shared';
 
 export type { ClassificationResult } from '@stashd/shared';
+
+export type { ChatMode } from '@stashd/shared';
 
 const BASE = '/api';
 
@@ -168,11 +171,19 @@ export function listConversations(): Promise<Conversation[]> {
   return req<Conversation[]>('/chat');
 }
 
-export function createConversation(): Promise<Conversation> {
+export function createConversation(mode: ChatMode = 'classic'): Promise<Conversation> {
   return req<Conversation>('/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: '{}',
+    body: JSON.stringify({ mode }),
+  });
+}
+
+export function updateConversationMode(id: string, mode: ChatMode): Promise<{ mode: ChatMode }> {
+  return req<{ mode: ChatMode }>(`/chat/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode }),
   });
 }
 
@@ -195,7 +206,8 @@ export function setConversationPins(id: string, docIds: string[]): Promise<{ pin
 /**
  * Send a message and stream the assistant's answer. EventSource can't POST,
  * so this reads the SSE body off a fetch stream. Resolves once the stream
- * ends (after a `done` or `error` event).
+ * ends (after a `done` or `error` event). The engine used is the
+ * conversation's stored mode (see {@link updateConversationMode}).
  */
 export async function sendChatMessage(
   conversationId: string,

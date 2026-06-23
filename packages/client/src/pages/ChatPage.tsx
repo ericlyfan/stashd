@@ -1,9 +1,11 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ChatMessage, ChatSSEEvent, Conversation, ToolCallRecord } from '@stashd/shared';
+import { ChatMessage, ChatSSEEvent, Conversation, Document, ToolCallRecord } from '@stashd/shared';
 import {
   ArrowUp,
+  ChevronDown,
   FileText,
+  History,
   MessagesSquare,
   Paperclip,
   Plus,
@@ -18,8 +20,10 @@ import {
   deleteConversation,
   getConversation,
   listConversations,
+  ChatMode,
   sendChatMessage,
   setConversationPins,
+  updateConversationMode,
 } from '../api';
 import { relTime } from '../lib/format';
 
@@ -306,26 +310,49 @@ function PinBar({
   );
 }
 
+// ── Chat modes ──────────────────────────────────────────────────────────────
+// The two engines a conversation can be answered by; the mode is fixed per
+// conversation (chosen on the New Chat screen, switchable from the header).
+
+interface ModeMeta {
+  id: ChatMode;
+  label: string;
+  blurb: string;
+}
+
+const MODES: ModeMeta[] = [
+  {
+    id: 'classic',
+    label: 'Current',
+    blurb: 'Fast answers grounded in your documents, cited line by line.',
+  },
+  {
+    id: 'agentic',
+    label: 'Agentic',
+    blurb: 'A multi-step agent that searches, reads and acts across the stash.',
+  },
+];
+
+// Ground the example prompts in the actual stash so they're one click from a
+// real answer, not hypotheticals. Shared by the New Chat screen and the
+// in-thread empty state.
+function stashSuggestions(docs: Document[]): string[] {
+  const out: string[] = [];
+  const newest = [...docs].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+  if (newest) out.push(`Summarize “${newest.originalName}”`);
+  const priced = docs.find(d => d.vendor && d.amount);
+  if (priced) out.push(`How much did I pay ${priced.vendor}?`);
+  out.push(
+    docs.length > 0 ? 'Which documents should I review or flag?' : 'What kinds of documents can you read?',
+  );
+  return out.slice(0, 3);
+}
+
 // ── Empty state ─────────────────────────────────────────────────────────────
 
 function EmptyThread({ onSuggest }: { onSuggest: (text: string) => void }) {
   const { docs } = useStore();
-
-  // Ground the examples in the actual stash so they're one click from a real
-  // answer, not hypotheticals.
-  const suggestions = useMemo(() => {
-    const out: string[] = [];
-    const newest = [...docs].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
-    if (newest) out.push(`Summarize “${newest.originalName}”`);
-    const priced = docs.find(d => d.vendor && d.amount);
-    if (priced) out.push(`How much did I pay ${priced.vendor}?`);
-    out.push(
-      docs.length > 0
-        ? 'Which documents should I review or flag?'
-        : 'What kinds of documents can you read?',
-    );
-    return out.slice(0, 3);
-  }, [docs]);
+  const suggestions = useMemo(() => stashSuggestions(docs), [docs]);
 
   return (
     <div className="chat-empty">
@@ -349,6 +376,79 @@ function EmptyThread({ onSuggest }: { onSuggest: (text: string) => void }) {
   );
 }
 
+// ── Conversation history ────────────────────────────────────────────────────
+// Past conversations live in a header dropdown rather than a second sidebar,
+// so the chat page is a single column that always opens on New Chat.
+
+function HistoryMenu({
+  conversations,
+  activeId,
+  onDelete,
+}: {
+  conversations: Conversation[];
+  activeId?: string;
+  onDelete: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onDown(e: MouseEvent) {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    }
+    window.addEventListener('mousedown', onDown);
+    return () => window.removeEventListener('mousedown', onDown);
+  }, [open]);
+
+  const active = conversations.find(c => c.id === activeId);
+
+  return (
+    <div className="chat-hist" ref={ref}>
+      <button
+        className="chat-hist-btn"
+        onClick={() => setOpen(o => !o)}
+        aria-expanded={open}
+        aria-haspopup="menu"
+        title="Past conversations"
+      >
+        <History size={14} />
+        <span className="chat-hist-current">{active ? active.title : 'History'}</span>
+        <ChevronDown size={13} className={`chat-hist-caret${open ? ' open' : ''}`} />
+      </button>
+      {open && (
+        <div className="chat-hist-pop" role="menu">
+          <div className="chat-hist-rubric">Correspondence</div>
+          {conversations.length === 0 && (
+            <div className="chat-hist-empty">
+              <MessagesSquare size={14} />
+              Nothing on file yet
+            </div>
+          )}
+          {conversations.map(conv => (
+            <div key={conv.id} className={`chat-hist-item${conv.id === activeId ? ' active' : ''}`}>
+              <Link to={`/chat/${conv.id}`} onClick={() => setOpen(false)}>
+                <span className="chat-hist-title">
+                  {conv.title}
+                  {conv.mode === 'agentic' && <span className="chat-rail-mode">Agentic</span>}
+                </span>
+                <span className="chat-hist-date">{relTime(conv.updatedAt)}</span>
+              </Link>
+              <button
+                aria-label="Delete conversation"
+                title="Delete conversation"
+                onClick={() => onDelete(conv.id)}
+              >
+                <Trash2 size={12} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Page ────────────────────────────────────────────────────────────────────
 
 interface StreamState {
@@ -366,6 +466,11 @@ export default function ChatPage() {
   const [pinnedDocIds, setPinnedDocIds] = useState<string[]>([]);
   const [input, setInput] = useState('');
   const [stream, setStream] = useState<StreamState | null>(null);
+  // For an open conversation, `mode` mirrors that conversation's stored mode;
+  // for a fresh New Chat it seeds from the last-used default in localStorage.
+  const [mode, setMode] = useState<ChatMode>(() =>
+    window.localStorage.getItem('stashd.chatMode') === 'agentic' ? 'agentic' : 'classic',
+  );
   const busy = stream !== null;
   const threadRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -380,12 +485,16 @@ export default function ChatPage() {
     if (!id) {
       setMessages([]);
       setPinnedDocIds([]);
+      // A fresh New Chat starts from the last-used default, not whatever the
+      // previously open conversation happened to use.
+      setMode(window.localStorage.getItem('stashd.chatMode') === 'agentic' ? 'agentic' : 'classic');
       return;
     }
     getConversation(id)
       .then(detail => {
         setMessages(detail.messages);
         setPinnedDocIds(detail.pinnedDocIds);
+        setMode(detail.mode);
       })
       .catch(() => {
         notify('Conversation not found', 'err');
@@ -402,6 +511,20 @@ export default function ChatPage() {
   useEffect(() => {
     if (!busy) textareaRef.current?.focus();
   }, [busy, id]);
+
+  // Switch the chat mode. For an open conversation this persists per
+  // conversation (so the thread remembers it); on the New Chat screen it just
+  // updates the default used for the next conversation we create.
+  function changeMode(next: ChatMode) {
+    if (next === mode) return;
+    setMode(next);
+    window.localStorage.setItem('stashd.chatMode', next);
+    if (!id) return;
+    setConversations(prev => prev.map(c => (c.id === id ? { ...c, mode: next } : c)));
+    updateConversationMode(id, next).catch(err =>
+      notify(err instanceof Error ? err.message : 'Could not switch chat mode', 'err'),
+    );
+  }
 
   // Resolve a (possibly truncated) citation id to a real document: exact or
   // prefix match against the message's recorded citations first (survives doc
@@ -438,7 +561,7 @@ export default function ChatPage() {
     let convId = id;
     if (!convId) {
       try {
-        const conv = await createConversation();
+        const conv = await createConversation(mode);
         convId = conv.id;
         navigate(`/chat/${conv.id}`, { replace: true });
         if (pinnedDocIds.length) await setConversationPins(conv.id, pinnedDocIds);
@@ -512,53 +635,133 @@ export default function ChatPage() {
       ? stream.tools[stream.tools.length - 1].summary.toLowerCase()
       : 'reading the stash…';
 
+  const suggestions = useMemo(() => stashSuggestions(docs), [docs]);
+
+  // The centered "New Chat" screen when no conversation is open yet (nothing
+  // sent). Once a message exists we render the normal thread instead.
+  const showStart = !id && messages.length === 0 && !stream;
+
+  // One composer markup, placed either in the centered start screen or at the
+  // foot of the thread — only one is mounted at a time, so the single
+  // textareaRef stays valid.
+  const composer = (
+    <div className="chat-compose">
+      <textarea
+        ref={textareaRef}
+        value={input}
+        rows={1}
+        placeholder="Ask about your documents…"
+        disabled={busy}
+        onChange={e => {
+          setInput(e.target.value);
+          autosize();
+        }}
+        onKeyDown={e => {
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            send();
+          }
+        }}
+      />
+      <div className="chat-compose-side">
+        <span className="chat-compose-hint">
+          <kbd>↵</kbd> send · <kbd>⇧↵</kbd> line
+        </span>
+        <button
+          className="chat-send"
+          onClick={send}
+          disabled={busy || !input.trim()}
+          aria-label="Send message"
+        >
+          <ArrowUp size={15} strokeWidth={2.2} />
+        </button>
+      </div>
+    </div>
+  );
+
+  // Compact segmented mode switch used in the thread header.
+  const modeToggle = (
+    <div className="chat-mode" role="radiogroup" aria-label="Chat mode">
+      {MODES.map(m => (
+        <button
+          key={m.id}
+          className={mode === m.id ? 'active' : ''}
+          onClick={() => changeMode(m.id)}
+          disabled={busy}
+          role="radio"
+          aria-checked={mode === m.id}
+          type="button"
+        >
+          {m.label}
+        </button>
+      ))}
+    </div>
+  );
+
   return (
     <div className="chat-layout">
-      <aside className="chat-rail">
-        <div className="chat-rail-head">
-          <span className="chat-rail-rubric">Correspondence</span>
-          <button
-            className="chat-new"
-            onClick={() => navigate('/chat')}
-            disabled={!id && messages.length === 0}
-            aria-label="New conversation"
-            title="New conversation"
-          >
-            <Plus size={13} />
-          </button>
-        </div>
-        <div className="chat-rail-list">
-          {conversations.map(conv => (
-            <div key={conv.id} className={`chat-rail-item${conv.id === id ? ' active' : ''}`}>
-              <Link to={`/chat/${conv.id}`}>
-                <span className="chat-rail-title">{conv.title}</span>
-                <span className="chat-rail-date">{relTime(conv.updatedAt)}</span>
-              </Link>
-              <button
-                aria-label="Delete conversation"
-                title="Delete conversation"
-                onClick={() => removeConversation(conv.id)}
-              >
-                <Trash2 size={12} />
-              </button>
-            </div>
-          ))}
-          {conversations.length === 0 && (
-            <div className="chat-rail-empty">
-              <MessagesSquare size={14} />
-              Nothing on file yet
-            </div>
-          )}
-        </div>
-      </aside>
-
       <section className="chat-main">
-        <header className="chat-head">
-          <h1>Ask the stash</h1>
-          <p>Every answer is drawn from your documents and cited.</p>
-        </header>
+        <div className="chat-topbar">
+          <HistoryMenu conversations={conversations} activeId={id} onDelete={removeConversation} />
+          <div className="chat-topbar-right">
+            {!showStart && modeToggle}
+            <button
+              className="chat-newchat"
+              onClick={() => navigate('/chat')}
+              disabled={showStart}
+              title="Start a new conversation"
+            >
+              <Plus size={14} strokeWidth={2.2} />
+              New chat
+            </button>
+          </div>
+        </div>
 
-        <div className="chat-sheet">
+        {showStart ? (
+          <div className="chat-start">
+            <div className="chat-start-inner">
+              <div className="chat-empty-seal">
+                <Sparkles size={22} />
+              </div>
+              <h1>Ask the stash</h1>
+              <p>
+                Answers come from your documents’ actual text, cited line by line. Choose how this
+                conversation should be answered — it’ll be remembered for the whole thread.
+              </p>
+
+              <div className="chat-mode-pick" role="radiogroup" aria-label="Chat mode">
+                {MODES.map(m => (
+                  <button
+                    key={m.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={mode === m.id}
+                    className={`chat-mode-card${mode === m.id ? ' active' : ''}`}
+                    onClick={() => changeMode(m.id)}
+                  >
+                    <span className="chat-mode-card-label">
+                      {m.id === 'agentic' ? <Wrench size={13} /> : <Sparkles size={13} />}
+                      {m.label}
+                    </span>
+                    <span className="chat-mode-card-blurb">{m.blurb}</span>
+                  </button>
+                ))}
+              </div>
+
+              {composer}
+
+              <div className="chat-start-suggest">
+                {suggestions.map(s => (
+                  <button key={s} onClick={() => suggest(s)}>
+                    <span className="chat-empty-quote">“</span>
+                    {s}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="chat-sheet">
           <PinBar pinnedDocIds={pinnedDocIds} onChange={updatePins} />
 
           <div className="chat-thread" ref={threadRef}>
@@ -615,39 +818,9 @@ export default function ChatPage() {
             )}
           </div>
 
-          <div className="chat-compose">
-            <textarea
-              ref={textareaRef}
-              value={input}
-              rows={1}
-              placeholder="Ask about your documents…"
-              disabled={busy}
-              onChange={e => {
-                setInput(e.target.value);
-                autosize();
-              }}
-              onKeyDown={e => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault();
-                  send();
-                }
-              }}
-            />
-            <div className="chat-compose-side">
-              <span className="chat-compose-hint">
-                <kbd>↵</kbd> send · <kbd>⇧↵</kbd> line
-              </span>
-              <button
-                className="chat-send"
-                onClick={send}
-                disabled={busy || !input.trim()}
-                aria-label="Send message"
-              >
-                <ArrowUp size={15} strokeWidth={2.2} />
-              </button>
-            </div>
-          </div>
+          {composer}
         </div>
+        )}
       </section>
     </div>
   );

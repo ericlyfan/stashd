@@ -91,9 +91,15 @@ export interface SSEEvent {
 
 // ── Chat / RAG ──────────────────────────────────────────────────────────────
 
+// Which chat engine a conversation talks to: the original RAG `ChatService`
+// ("classic") or the experimental agentic loop ("agentic"). Stored per
+// conversation so each thread keeps the mode it was started in.
+export type ChatMode = "classic" | "agentic";
+
 export interface Conversation {
   id: string;
   title: string;
+  mode: ChatMode;
   createdAt: string;
   updatedAt: string;
 }

@@ -2,11 +2,11 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-It is the single living document for **Stashd** — both the *operating manual* (how to build, run,
-verify, and not break things) and the *architecture & feature reference* (how it all works). Keep this
+It is the single living document for **Stashd** — both the _operating manual_ (how to build, run,
+verify, and not break things) and the _architecture & feature reference_ (how it all works). Keep this
 file honest and current; it is the project's memory and the first thing agents load.
 
-_Last updated: 2026-06-18_
+_Last updated: 2026-06-22 (chat: per-conversation mode (PATCH /chat/:id); single-column page — history moved to a top-bar dropdown, always opens on the New Chat start screen)_
 
 > **How this file is organized.** Part I is the operating manual — read it first. Part II is the
 > detailed architecture/feature reference; reach for the relevant section when you touch that area.
@@ -34,11 +34,12 @@ A session-end hook (`.claude/settings.json`) will remind you when you've touched
 ## What Stashd is
 
 A **local-first document organizer**. You drop in files (PDF, image, Office, text, email); a
-multimodal LLM on *your own* Ollama instance reads each one and proposes a filing — category, tags,
+multimodal LLM on _your own_ Ollama instance reads each one and proposes a filing — category, tags,
 summary, key dates, amount, vendor — and you approve or correct it before it lands in "the stash."
 Nothing leaves the machine except the call to your configured Ollama endpoint.
 
 Three feature pillars beyond filing:
+
 - **Search** — FTS5 full-text over document bodies, with match-aware snippets.
 - **Ask the stash** (`/chat`) — RAG chat with citations and a native tool loop that can act on the stash.
 - **Ledgers** (`/ledgers`) — project cost tracking, optionally linked to stash documents.
@@ -53,15 +54,16 @@ browser-reported MIME (unreliable for Office/email); the pipeline resolves MIME 
 
 npm-workspaces monorepo; three packages under `packages/`.
 
-| Package    | Stack                                              | Entry / role                                          |
-| ---------- | -------------------------------------------------- | ----------------------------------------------------- |
-| `server`   | Express 4, TypeScript, tsx, better-sqlite3         | `src/index.ts` → `src/app.ts`. REST + SSE, storage, AI |
-| `client`   | React 18, Vite, react-router 6, pdfjs-dist         | `src/main.tsx` → `src/App.tsx`. SPA, hand-written CSS  |
-| `shared`   | TypeScript only                                    | `src/index.ts` re-exports `types.ts` + `category.ts`   |
+| Package  | Stack                                      | Entry / role                                           |
+| -------- | ------------------------------------------ | ------------------------------------------------------ |
+| `server` | Express 4, TypeScript, tsx, better-sqlite3 | `src/index.ts` → `src/app.ts`. REST + SSE, storage, AI |
+| `client` | React 18, Vite, react-router 6, pdfjs-dist | `src/main.tsx` → `src/App.tsx`. SPA, hand-written CSS  |
+| `shared` | TypeScript only                            | `src/index.ts` re-exports `types.ts` + `category.ts`   |
 
 ### Where things live
 
 **Server** (`packages/server/src/`)
+
 - `app.ts` — wires services + routes; runs boot backfills. `index.ts` — listen loop.
 - `routes/` — `documents.ts`, `categories.ts`, `chat.ts`, `projects.ts` (one router factory each).
 - `services/`
@@ -74,8 +76,11 @@ npm-workspaces monorepo; three packages under `packages/`.
   - `ChatService.ts` — RAG retrieval + tool loop.
   - `categoryStyle.ts` — auto icon/color for new categories.
 - `providers/` — model-provider registry keyed by `PROVIDER`; `OllamaProvider` is the only impl.
+- `agentic/` — standalone experimental document agent loop (`glm-4.7:cloud` by default) with swappable
+  model/tool/corpus seams; not yet wired to `/chat`.
 
 **Client** (`packages/client/src/`)
+
 - `store.tsx` — the one global context (docs + categories + projects, upload queue/SSE, review sheet, toasts).
 - `api.ts` — every server call; components call these then `refresh()`.
 - `pages/` — route components. `components/` — reusable UI. `lib/` — `format.ts` (`viewerKind`),
@@ -83,6 +88,7 @@ npm-workspaces monorepo; three packages under `packages/`.
 - `styles.css` — **the only stylesheet.** No CSS framework; paper/ledger aesthetic.
 
 **Shared** (`packages/shared/src/`)
+
 - `types.ts` — `Document`, `Category`, `ClassificationResult`, `SearchHit`, `SSEEvent`, etc.
 - `category.ts` — **single source of truth** for runtime helpers that must not drift across
   client/server: `MIME_BY_EXT`, `SUPPORTED_EXTENSIONS`, `isSupportedFilename`, `mimeFromExtension`,
@@ -113,11 +119,19 @@ not claim a change works on a type-check alone if it has runtime behavior.
 ### Environment (`packages/server/.env`)
 
 Classification (the configured cloud endpoint is `https://ollama.com`):
+
 - `OLLAMA_URL` (default `http://localhost:11434`)
 - `OLLAMA_MODEL` (default `gemma4`) — must be multimodal, JSON-capable, **and tool-capable** (chat uses native tool calling)
 - `OLLAMA_API_KEY` (optional), `PORT` (default `3001`), `PROVIDER` (default `ollama`)
 
+Standalone agent experiment (`agentic/`):
+
+- `AGENT_OLLAMA_URL` (falls back to `OLLAMA_URL`, then `http://localhost:11434`)
+- `AGENT_OLLAMA_MODEL` (default `glm-4.7:cloud`)
+- `AGENT_OLLAMA_API_KEY` (falls back to `OLLAMA_API_KEY`)
+
 Embeddings run on a **separate, local** Ollama (the cloud endpoint serves no embedding models):
+
 - `OLLAMA_EMBED_URL` (default `http://localhost:11434`)
 - `OLLAMA_EMBED_MODEL` (default `embeddinggemma`, 768 dims — `ollama pull embeddinggemma` once)
 - `OLLAMA_EMBED_API_KEY` (optional)
@@ -129,10 +143,10 @@ Embeddings run on a **separate, local** Ollama (the cloud endpoint serves no emb
   extractor in `textExtraction.ts` and a viewer branch via `viewerKind` in `client/src/lib/format.ts`.
   Don't hardcode extension lists anywhere else.
 - **`shared` is the anti-drift layer.** Anything client and server must agree on (slugs, colors, MIME
-  resolution) lives there, not duplicated. The client *mirrors* the icon/color picker in
+  resolution) lives there, not duplicated. The client _mirrors_ the icon/color picker in
   `lib/categoryMeta.tsx` — keep it in sync with `server/services/categoryStyle.ts`.
 - **All SQLite goes through `StoreService`.** No ad-hoc DB access from routes. Money totals are
-  *computed per request* (`sumTotals`), never stored.
+  _computed per request_ (`sumTotals`), never stored.
 - **Slugs are stable.** Renaming a category never changes its slug, so documents aren't rewritten and
   files don't move on disk. Re-categorizing is cosmetic w.r.t. `storagePath`.
 - **Taxonomy is merge-biased.** Near-duplicate drawers are worse than a lost distinction; the
@@ -156,7 +170,7 @@ Embeddings run on a **separate, local** Ollama (the cloud endpoint serves no emb
   resolved by **unique prefix** on both ends because the model drops trailing UUID chars; unresolvable
   citations render as inert chips.
 - **`docs/` and `.claude/` are gitignored.** Design specs/plans under `docs/superpowers/` are
-  local-only — don't assume a reader can see them. This `CLAUDE.md` *is* committed.
+  local-only — don't assume a reader can see them. This `CLAUDE.md` _is_ committed.
 - **HEIC** never previews in-browser (upload preview, viewer, thumbnails all fall back); classification
   still works via server-side JPEG conversion.
 - **CJK search is weak** — filenames/text are stored correctly, but FTS5's `unicode61` tokenizer
@@ -281,7 +295,7 @@ in the Inbox and the sidebar badge.
   terms are ANDed, results ordered by FTS rank. Mid-word substrings no longer match (FTS tokenizes on
   word boundaries) — the trade for ranked, indexed search.
 - When the body text matched, the response `SearchHit` carries a `snippet` (FTS5 `snippet()`,
-  match-aware) which the UI renders in italics on result cards/rows so you can see *why* it matched.
+  match-aware) which the UI renders in italics on result cards/rows so you can see _why_ it matched.
 - **Startup backfill** (`textExtraction.ts`, `backfillDerivedFields`): on boot the server re-parses any
   PDF lacking `extractedText` and hashes any file lacking `contentHash`, so pre-feature documents
   become searchable and duplicate-checkable. Image text can't be backfilled (it comes from the model
@@ -315,17 +329,47 @@ tags, flag/unflag; only on explicit user request), `list_categories`, plus the L
 these into `citations` (id + name, surviving later doc deletion) and persists tool calls as
 human-readable records. History sent to the model is capped at the last 20 messages.
 
-**Client** (`pages/ChatPage.tsx`): the conversation renders as a single "sheet" card — an **On the
-desk** pinned-docs tray along its top edge, the thread as ledger entries, and the composer as the
-sheet's footer. A "Correspondence" rail lists conversations (create/delete, relative dates). The empty
-state offers clickable suggestions grounded in the actual stash. Markdown-lite rendering covers
-paragraphs, bullets, **bold**, `###` headings and pipe tables (deliberately not a markdown engine);
-citation markers become chips linking to `/doc/:id`, with a "sources" footer per answer, and tool calls
-render as a mono work-log above the answer. **Citation ids are matched loosely and resolved by unique
-prefix** (client and server both) because the model sometimes drops trailing UUID characters. Text
-streamed before a tool round is treated as deliberation and discarded when the `tool` event arrives; an
-`update_doc` tool call triggers a store `refresh()`. SSE for the answer comes over a `fetch` POST
-stream (EventSource can't POST).
+**Client** (`pages/ChatPage.tsx`): a **single-column page** (no second sidebar) under the global nav.
+A slim **top bar** holds a `History ▾` dropdown (past conversations — active highlight, **Agentic**
+badge, relative date, delete; the `HistoryMenu` popover replaced the old "Correspondence" rail) on the
+left, and the mode toggle (thread view only) + a **New chat** button on the right. The active
+conversation renders as a single "sheet" card — an **On the desk** pinned-docs tray along its top edge,
+the thread as ledger entries, and the composer as the sheet's footer. **Chat mode is per conversation,
+not global.** Each conversation stores a `mode` (**Current** = `ChatService` / **Agentic** =
+`AgenticChatService`) — fixed when the chat is started and switchable later from the top bar (a
+`PATCH /chat/:id` persists it). The message route reads the *stored* conversation mode as the source of
+truth, so messages no longer carry `mode`. **The page always opens on a centered New Chat start
+screen** (greeting + two mode cards with blurbs + composer + grounded suggestions): the `/chat` route
+has no id, and both the sidebar "Ask the stash" link and the top-bar **New chat** button navigate
+there; sending the first message creates the conversation and transitions to the sheet. The mode picker
+seeds from a `stashd.chatMode` localStorage default (the last mode you chose) so new chats start where
+you left off. Markdown-lite rendering covers paragraphs, bullets, **bold**, `###` headings and pipe tables
+(deliberately not a markdown engine); citation markers become chips linking to `/doc/:id`, with a
+"sources" footer per answer, and tool calls render as a mono work-log above the answer. **Citation ids
+are matched loosely and resolved by unique prefix** (client and server both) because the model sometimes
+drops trailing UUID characters. Text streamed before a tool round is treated as deliberation and
+discarded when the `tool` event arrives; an `update_doc` tool call triggers a store `refresh()`. SSE for
+the answer comes over a `fetch` POST stream (EventSource can't POST).
+
+**Agentic chat prototype** (`agentic/` + `AgenticChatService`): an experimental loop available in
+`/chat` via the **Agentic** mode toggle. `AgenticWorkflow` is model-agnostic and enforces the
+reliability rails: strong retrieval-first system prompt, a hard tool-iteration cap (default 6), tool
+errors returned as tool messages, compact JSON tool results, and per-step trace events.
+`OllamaAgentClient` talks to Ollama `/api/chat` with `glm-4.7:cloud` by default. The tool set now
+reaches parity with the classic chat: document tools (`search_docs`, `read_doc`, `list_categories`,
+and `update_doc` — re-categorize / tag / flag, gated on explicit user request in the system prompt) and
+ledger tools (`list_projects`, `read_project`, including optional line-item filtering such as project
+`4190` + query `Costco`). Document tools go through the `AgentDocumentCorpus` seam: `StoreDocumentCorpus`
+adapts the real `StoreService` (and resolves a truncated/prefix doc id the way citations do), while
+`FixtureDocumentCorpus` supports standalone smoke tests without a database or live model.
+`AgenticChatService` wraps this loop with normal chat persistence, pinned-doc context, a lightweight
+roster context message (today's date + drawers + ledgers, so the agent need not spend a tool round to
+learn what exists), loose citation extraction and SSE-compatible tool/done events. It **streams model
+tokens** like classic chat: an `onToken` handler threads from `AgenticChatService` → `AgenticWorkflow.run`
+→ `OllamaAgentClient` (which switches to `stream: true` and parses the NDJSON), forwarding `token`
+events as they arrive. Tokens stream every round; a round that ends in a tool call has its deliberation
+text discarded client-side on the `tool` event (same as classic). An `update_doc` tool event drives the
+same client `refresh()` as classic mode.
 
 ## 3c. Ledgers — project cost tracking
 
@@ -350,9 +394,10 @@ Deleting a document nulls those links inside `removeDocument`'s transaction, so 
 stats strip. A project page has the money stats strip, by-category/by-vendor breakdown bars, a **spend
 timeline** (`components/SpendTimeline.tsx`), and the line-item table (dense, tabular-nums, a totals
 `tfoot`); clicking a row opens `LineItemDialog` (all fields, with **Total paid** auto-summing from paid
-+ tax until the user overrides it, plus the document picker). `ProjectDialog` handles create/edit.
-Projects ride along in the global `store` (loaded with docs + categories in `refresh()`), so the
-sidebar shows an active-project count.
+
+- tax until the user overrides it, plus the document picker). `ProjectDialog` handles create/edit.
+  Projects ride along in the global `store` (loaded with docs + categories in `refresh()`), so the
+  sidebar shows an active-project count.
 
 **Spend timeline** (`components/SpendTimeline.tsx`): a chart of line-item `totalPaid` over time with
 three modes — **Monthly**, **Quarterly**, **By category**. Time buckets are gap-filled (it walks
@@ -436,44 +481,46 @@ Components call API functions from `api.ts` directly and then `refresh()`.
 
 ## 6. API surface (all under `/api`)
 
-| Method & path                                    | Purpose                                                                                                                     |
-| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
-| `POST /documents/upload`                         | multipart upload → `{ jobId, duplicate? }` (413 over 50 MB, 400 bad type)                                                   |
-| `DELETE /documents/job/:jobId`                   | discard an in-flight upload (temp dir + sidecar); idempotent 204                                                            |
-| `GET /documents/process/:jobId`                  | SSE: `extracting → classifying → complete` (with classification) or `error`                                                 |
-| `POST /documents/file/:jobId`                    | persist a reviewed document; response includes `attachmentsSpawned` (emails fan out attachments into their own docs)         |
-| `GET /documents?search=&category=`               | list/search (SearchHits with snippets when searching)                                                                       |
-| `GET /documents/:id` / `GET /documents/:id/file` | metadata / raw file                                                                                                         |
-| `PATCH /documents/:id`                           | update category/tags/notes/status                                                                                           |
-| `PATCH /documents`                               | batch update `{ ids, category?, status?, addTags?, removeTags? }` (drives drag-and-drop + multi-select bulk move)            |
-| `DELETE /documents`                              | batch delete `{ ids }` → `{ deleted }` (multi-select bulk delete)                                                          |
-| `DELETE /documents/:id`                          | delete file + entry                                                                                                         |
-| `GET /categories`                                | all categories with live `documentCount`                                                                                    |
-| `POST /categories`                               | create by name (auto icon/color)                                                                                            |
-| `PATCH /categories/:id`                          | rename / re-icon / re-color / pin (`pinned`)                                                                                |
-| `PATCH /categories/reorder`                      | persist manual drawer order `{ ids }` (declared before `:id` so "reorder" isn't read as an id)                              |
-| `DELETE /categories/:id`                         | delete (custom + empty only)                                                                                                |
-| `GET /chat` / `POST /chat`                       | list conversations / start one                                                                                             |
-| `GET /chat/:id` / `DELETE /chat/:id`             | conversation with messages + pins / delete it                                                                               |
-| `PUT /chat/:id/pins`                             | replace pinned-document list `{ docIds }`                                                                                   |
-| `POST /chat/:id/messages`                        | send a user message; SSE stream of `token` / `tool` / `done` / `error` events                                               |
-| `GET /projects`                                  | all projects with computed money totals                                                                                    |
-| `POST /projects`                                 | create a project `{ name, description? }`                                                                                   |
-| `GET /projects/:id`                              | project detail with line items + totals                                                                                     |
-| `PATCH /projects/:id`                            | rename / re-describe / archive (`status`)                                                                                   |
-| `DELETE /projects/:id`                           | delete project + its line items                                                                                             |
-| `POST /projects/:id/items`                       | add a line item                                                                                                             |
-| `PATCH /projects/:id/items/:itemId`              | partial-update a line item (`documentId: null` clears the link)                                                            |
-| `DELETE /projects/:id/items/:itemId`             | delete a line item                                                                                                         |
-| `GET /projects/by-document/:docId`               | line items linking a given document (the document → ledger direction)                                                       |
+| Method & path                                    | Purpose                                                                                                              |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| `POST /documents/upload`                         | multipart upload → `{ jobId, duplicate? }` (413 over 50 MB, 400 bad type)                                            |
+| `DELETE /documents/job/:jobId`                   | discard an in-flight upload (temp dir + sidecar); idempotent 204                                                     |
+| `GET /documents/process/:jobId`                  | SSE: `extracting → classifying → complete` (with classification) or `error`                                          |
+| `POST /documents/file/:jobId`                    | persist a reviewed document; response includes `attachmentsSpawned` (emails fan out attachments into their own docs) |
+| `GET /documents?search=&category=`               | list/search (SearchHits with snippets when searching)                                                                |
+| `GET /documents/:id` / `GET /documents/:id/file` | metadata / raw file                                                                                                  |
+| `PATCH /documents/:id`                           | update category/tags/notes/status                                                                                    |
+| `PATCH /documents`                               | batch update `{ ids, category?, status?, addTags?, removeTags? }` (drives drag-and-drop + multi-select bulk move)    |
+| `DELETE /documents`                              | batch delete `{ ids }` → `{ deleted }` (multi-select bulk delete)                                                    |
+| `DELETE /documents/:id`                          | delete file + entry                                                                                                  |
+| `GET /categories`                                | all categories with live `documentCount`                                                                             |
+| `POST /categories`                               | create by name (auto icon/color)                                                                                     |
+| `PATCH /categories/:id`                          | rename / re-icon / re-color / pin (`pinned`)                                                                         |
+| `PATCH /categories/reorder`                      | persist manual drawer order `{ ids }` (declared before `:id` so "reorder" isn't read as an id)                       |
+| `DELETE /categories/:id`                         | delete (custom + empty only)                                                                                         |
+| `GET /chat` / `POST /chat`                       | list conversations / start one (`{ mode? }` — `classic`/`agentic`, fixed per conversation)                          |
+| `GET /chat/:id` / `DELETE /chat/:id`             | conversation with messages + pins (+ `mode`) / delete it                                                            |
+| `PATCH /chat/:id`                                | switch the conversation's chat mode `{ mode }`                                                                       |
+| `PUT /chat/:id/pins`                             | replace pinned-document list `{ docIds }`                                                                            |
+| `POST /chat/:id/messages`                        | send a user message; SSE stream of `token` / `tool` / `done` / `error` events                                        |
+| `GET /projects`                                  | all projects with computed money totals                                                                              |
+| `POST /projects`                                 | create a project `{ name, description? }`                                                                            |
+| `GET /projects/:id`                              | project detail with line items + totals                                                                              |
+| `PATCH /projects/:id`                            | rename / re-describe / archive (`status`)                                                                            |
+| `DELETE /projects/:id`                           | delete project + its line items                                                                                      |
+| `POST /projects/:id/items`                       | add a line item                                                                                                      |
+| `PATCH /projects/:id/items/:itemId`              | partial-update a line item (`documentId: null` clears the link)                                                      |
+| `DELETE /projects/:id/items/:itemId`             | delete a line item                                                                                                   |
+| `GET /projects/by-document/:docId`               | line items linking a given document (the document → ledger direction)                                                |
 
 ## 7. Where it's headed
 
-`docs/superpowers/plans/` holds completed-work records (local-only; gitignored). **RAG "ask your docs"
-+ tool-calling chat landed 2026-06-12** (§3b), as did the SQLite/FTS5 migration, duplicate detection,
-and the batch upload queue. **Expanded file-type support landed 2026-06-18**: webp, txt, md, docx,
-xlsx, csv, eml, msg — via an extension-keyed extraction dispatcher, a six-way viewer dispatcher, and
-email-attachment fan-out (§2), plus the full-screen viewer and multi-select bulk delete/move.
+`docs/superpowers/plans/` holds completed-work records (local-only; gitignored). \*\*RAG "ask your docs"
+
+- tool-calling chat landed 2026-06-12** (§3b), as did the SQLite/FTS5 migration, duplicate detection,
+  and the batch upload queue. **Expanded file-type support landed 2026-06-18\*\*: webp, txt, md, docx,
+  xlsx, csv, eml, msg — via an extension-keyed extraction dispatcher, a six-way viewer dispatcher, and
+  email-attachment fan-out (§2), plus the full-screen viewer and multi-select bulk delete/move.
 
 Remaining roadmap: re-classify-on-demand and classification feedback loops as smaller follow-ups.
 Deprioritized: server-side thumbnails, dashboards/reminders. Known intelligence gaps: image-only
