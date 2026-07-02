@@ -3985,6 +3985,84 @@ a {
   white-space: nowrap;
 }
 
+/* ── Portfolio (stock holdings) ─────────────────────────────────────────── */
+
+/* Gain green / loss red, reused across the summary tiles and the holdings
+   table. Kept muted to sit in the paper/ledger palette rather than shouting. */
+.gain-pos {
+  color: var(--moss);
+}
+.gain-neg {
+  color: #c0392b;
+}
+
+/* Symbol cell: ticker in mono, company name trailing in muted text. */
+.h-sym {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 180px;
+}
+.h-ticker {
+  font-family: var(--mono);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--ink);
+}
+.h-name {
+  font-size: 12px;
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.h-price {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.h-price-tag {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  background: rgba(28, 24, 20, 0.06);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+/* Advisory banner when live prices couldn't be fetched. */
+.portfolio-note {
+  margin: 14px 0 0;
+  padding: 11px 14px;
+  border: 1px solid var(--gold);
+  border-radius: 8px;
+  background: rgba(160, 125, 42, 0.08);
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.portfolio-asof {
+  margin-top: 12px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  color: var(--ink-faint);
+}
+
+/* Refresh icon spinner while re-pricing. */
+.spin {
+  animation: portfolio-spin 0.9s linear infinite;
+}
+@keyframes portfolio-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 /* Divider between category groups. A 2px rule (wider than the 1px row
    separators) reliably wins the border-collapse conflict so it's actually
    visible, and the extra top padding opens a clear gap above each new group. */

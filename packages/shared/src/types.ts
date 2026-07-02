@@ -230,3 +230,83 @@ export interface DocumentLink {
   itemId: string;
   description: string;
 }
+
+// ── Portfolio (stock holdings) ───────────────────────────────────────────────
+// A tracked stock position. `buyPrice` is the per-share cost, so `shares ×
+// buyPrice` is the cost basis. The current price is fetched from a market-data
+// provider at read time (never stored); `manualPrice` is an optional per-share
+// override used when the quote provider is unreachable (e.g. offline, or blocked
+// egress) or for untraded/illiquid holdings.
+
+export interface Holding {
+  id: string;
+  symbol: string; // ticker, e.g. "AAPL"
+  name?: string; // company / display name
+  shares: number;
+  buyPrice: number; // per-share cost basis
+  manualPrice?: number; // optional per-share current-price override
+  currency?: string; // display currency, informational
+  documentId?: string; // optional supporting stash document
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// A live quote for a symbol, fetched per request and cached briefly. Never
+// persisted.
+export interface Quote {
+  symbol: string;
+  price: number;
+  previousClose?: number;
+  currency?: string;
+}
+
+// Where a holding's current price came from: a live quote, the manual override,
+// or nothing (unpriced).
+export type PriceSource = "live" | "manual" | "none";
+
+// A holding enriched with its resolved current price and computed returns. All
+// money-derived fields are undefined when no current price is known.
+export interface HoldingWithQuote extends Holding {
+  currentPrice?: number; // resolved: live quote, else manualPrice
+  priceSource: PriceSource;
+  costBasis: number; // shares × buyPrice
+  marketValue?: number; // shares × currentPrice
+  gain?: number; // marketValue − costBasis
+  gainPct?: number; // gain / costBasis
+  dayChange?: number; // shares × (price − previousClose)
+  dayChangePct?: number;
+  quoteCurrency?: string;
+}
+
+// Portfolio-wide rollups, computed per request — never persisted. Money sums use
+// only holdings whose current price is known.
+export interface PortfolioTotals {
+  holdingCount: number;
+  pricedCount: number; // holdings with a known current price
+  costBasis: number; // total invested, all holdings
+  marketValue: number; // total value of priced holdings
+  gain: number;
+  gainPct: number;
+  dayChange: number;
+}
+
+export interface PortfolioSnapshot {
+  holdings: HoldingWithQuote[];
+  totals: PortfolioTotals;
+  quotedAt: string; // when quotes were fetched
+  quotesLive: boolean; // false when the provider returned nothing (offline/blocked)
+}
+
+// Fields a client may set on a holding; the server owns id / timestamps.
+// `documentId: null` explicitly clears the link.
+export interface HoldingInput {
+  symbol?: string;
+  name?: string;
+  shares?: number;
+  buyPrice?: number;
+  manualPrice?: number;
+  currency?: string;
+  documentId?: string | null;
+  notes?: string;
+}

@@ -6,8 +6,11 @@ import {
   ConversationDetail,
   Document,
   DocumentLink,
+  Holding,
+  HoldingInput,
   LineItem,
   LineItemInput,
+  PortfolioSnapshot,
   ProjectDetail,
   ProjectSummary,
   SearchHit,
@@ -16,6 +19,7 @@ import {
 } from '@stashd/shared';
 
 export type { ProjectSummary, ProjectDetail, LineItem, LineItemInput, DocumentLink } from '@stashd/shared';
+export type { Holding, HoldingInput, HoldingWithQuote, PortfolioSnapshot, PortfolioTotals } from '@stashd/shared';
 
 export type { UploadResponse } from '@stashd/shared';
 
@@ -300,6 +304,34 @@ export function deleteLineItem(projectId: string, itemId: string): Promise<void>
 
 export function getDocumentLinks(docId: string): Promise<DocumentLink[]> {
   return req<DocumentLink[]>(`/projects/by-document/${docId}`);
+}
+
+// ── Portfolio (stock holdings) ───────────────────────────────────────────────
+
+// The whole portfolio: every holding enriched with its live price + returns,
+// plus rollups. Prices are fetched server-side per request (cached ~60s).
+export function getPortfolio(): Promise<PortfolioSnapshot> {
+  return req<PortfolioSnapshot>('/holdings');
+}
+
+export function createHolding(input: HoldingInput): Promise<Holding> {
+  return req<Holding>('/holdings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateHolding(id: string, input: HoldingInput): Promise<Holding> {
+  return req<Holding>(`/holdings/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteHolding(id: string): Promise<void> {
+  return req<void>(`/holdings/${id}`, { method: 'DELETE' });
 }
 
 export function subscribeClassify(jobId: string, onEvent: (event: SSEEvent) => void): EventSource {

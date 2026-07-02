@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { NavLink, useLocation, useNavigate, useSearchParams } from "react-router-dom";
-import { BookOpen, ChevronDown, Inbox, Library, Pin, Plus, Search, Sparkles } from "lucide-react";
+import { BookOpen, ChevronDown, Inbox, Library, Pin, Plus, Search, Sparkles, TrendingUp } from "lucide-react";
 import { useStore } from "../store";
 import { batchUpdateDocuments, createCategory, reorderCategories, updateCategory } from "../api";
 import { categoryIcon } from "../lib/categoryMeta";
@@ -181,6 +181,10 @@ export default function Sidebar() {
           <BookOpen size={15} strokeWidth={1.8} />
           Ledgers
           {activeProjects > 0 && <span className="count">{activeProjects}</span>}
+        </NavLink>
+        <NavLink to="/portfolio" className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}>
+          <TrendingUp size={15} strokeWidth={1.8} />
+          Portfolio
         </NavLink>
         <NavLink to="/chat" className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}>
           <Sparkles size={15} strokeWidth={1.8} />

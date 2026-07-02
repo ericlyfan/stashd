@@ -6,7 +6,7 @@ It is the single living document for **Stashd** — both the _operating manual_ 
 verify, and not break things) and the _architecture & feature reference_ (how it all works). Keep this
 file honest and current; it is the project's memory and the first thing agents load.
 
-_Last updated: 2026-06-22 (chat: per-conversation mode (PATCH /chat/:id); single-column page — history moved to a top-bar dropdown, always opens on the New Chat start screen)_
+_Last updated: 2026-07-02 (new **Portfolio** section (`/portfolio`) — stock holdings with live Yahoo prices, per-holding + portfolio gain/loss, and optional stash-document links)_
 
 > **How this file is organized.** Part I is the operating manual — read it first. Part II is the
 > detailed architecture/feature reference; reach for the relevant section when you touch that area.
@@ -38,11 +38,12 @@ multimodal LLM on _your own_ Ollama instance reads each one and proposes a filin
 summary, key dates, amount, vendor — and you approve or correct it before it lands in "the stash."
 Nothing leaves the machine except the call to your configured Ollama endpoint.
 
-Three feature pillars beyond filing:
+Four feature pillars beyond filing:
 
 - **Search** — FTS5 full-text over document bodies, with match-aware snippets.
 - **Ask the stash** (`/chat`) — RAG chat with citations and a native tool loop that can act on the stash.
 - **Ledgers** (`/ledgers`) — project cost tracking, optionally linked to stash documents.
+- **Portfolio** (`/portfolio`) — stock-holdings tracker with live prices and gain/loss, optionally linked to stash documents.
 
 **Accepted file types** — single source of truth is `MIME_BY_EXT` in `shared/src/category.ts`
 (exposed as `SUPPORTED_EXTENSIONS` / `isSupportedFilename`): `pdf`, `jpg/jpeg`, `png`, `heic/heif`,
@@ -65,7 +66,7 @@ npm-workspaces monorepo; three packages under `packages/`.
 **Server** (`packages/server/src/`)
 
 - `app.ts` — wires services + routes; runs boot backfills. `index.ts` — listen loop.
-- `routes/` — `documents.ts`, `categories.ts`, `chat.ts`, `projects.ts` (one router factory each).
+- `routes/` — `documents.ts`, `categories.ts`, `chat.ts`, `projects.ts`, `holdings.ts` (one router factory each).
 - `services/`
   - `StoreService.ts` — **all SQLite access** (better-sqlite3, WAL). Schema, migrations, queries.
   - `FileService.ts` — file storage under `data/documents/<slug>/` and `data/temp/<jobId>/`.
@@ -74,6 +75,7 @@ npm-workspaces monorepo; three packages under `packages/`.
   - `emailParse.ts` — `.eml`/`.msg` → headers + body + attachments.
   - `EmbeddingService.ts` — chunk + embed (local Ollama), vector index lifecycle.
   - `ChatService.ts` — RAG retrieval + tool loop.
+  - `QuoteService.ts` — live stock quotes from Yahoo's public chart endpoint (no key), briefly cached, failure-tolerant.
   - `categoryStyle.ts` — auto icon/color for new categories.
 - `providers/` — model-provider registry keyed by `PROVIDER`; `OllamaProvider` is the only impl.
 - `agentic/` — standalone experimental document agent loop (`glm-4.7:cloud` by default) with swappable
@@ -408,6 +410,48 @@ are how you read pacing) and each column stacks into per-category segments (colo
 `CATEGORY_COLORS`). Items with a missing/invalid `datePaid` can't be placed in time, so their spend is
 summed separately and noted rather than dropped. Clicking a segment opens the underlying line item.
 
+## 3d. Portfolio — stock holdings
+
+A standalone section (sidebar entry **Portfolio**, `/portfolio`) for tracking stock positions —
+what you own, what you paid, and what it's worth now. Like Ledgers it's largely independent of the
+document organizer, connecting only through an optional one-way link (a holding → a supporting stash
+document, e.g. a brokerage statement).
+
+**Model** (`holdings` table, plain SQLite — no FTS/vec): each **holding** carries a `symbol` (ticker),
+optional `name`, `shares`, `buyPrice` (per-share cost basis), an optional `manualPrice` (per-share
+current-price override), an optional `currency`, an optional `documentId`, and `notes`. **The current
+price is never stored** — it's fetched live per request; `manualPrice` is the fallback. Money rollups
+(cost basis / market value / gain / return / day-change) are computed per request in the route's
+`buildSnapshot`, never persisted.
+
+**Live prices** (`QuoteService.ts`): `fetchQuotes` hits Yahoo Finance's public chart endpoint
+(`query1.finance.yahoo.com/v8/finance/chart/<SYMBOL>`, no API key), reading `meta.regularMarketPrice`
+and `chartPreviousClose`. It dedupes + upper-cases symbols, caches quotes ~60s, fetches misses
+concurrently, and **never throws** — a network error, blocked egress, or malformed JSON just yields no
+quote. This is an **unofficial** endpoint and requires a browser-like `User-Agent`. **Egress note:**
+some networks (including the sandboxed Claude Code web environment) block this host at the proxy; when
+that happens `quotesLive` comes back `false` and holdings show their manual price or render unpriced.
+Runs fine against a normal local network.
+
+**Price resolution & returns** (`routes/holdings.ts`): per holding the current price resolves to the
+live quote (`priceSource: 'live'`), else the manual override (`'manual'`), else nothing (`'none'`,
+unpriced). `costBasis = shares × buyPrice`; when priced, `marketValue = shares × currentPrice`,
+`gain = marketValue − costBasis`, `gainPct = gain / costBasis`, and — for live quotes with a previous
+close — a day change. **Portfolio return % is measured against the cost basis of the _priced_ holdings
+only**, so an unpriced position doesn't distort the percentage; the invested (cost-basis) total still
+counts every holding.
+
+**UI** (`pages/PortfolioPage.tsx`, `components/HoldingDialog.tsx`): the page fetches its own
+`PortfolioSnapshot` (it doesn't ride in the global `store`, since pricing is heavier than the other
+`refresh()` loads), shows a four-tile summary strip (invested / market value / total gain-loss /
+return, gain colored green/red), an advisory banner when `quotesLive` is false, and a dense holdings
+table (tabular-nums, a totals `tfoot`, `MANUAL` tags on overridden prices, a paperclip on linked rows).
+A **Refresh** button re-prices (spinner while in flight). Clicking a row opens `HoldingDialog`
+(create/edit/delete) — leave the current-price field blank to auto-fetch, or set it to override; the
+same search-popover the ledgers/chat use attaches a supporting document. Deleting a document nulls any
+holding link inside `removeDocument`'s transaction (alongside the ledger links), so it dangles
+harmlessly.
+
 ## 4. Categories ("drawers")
 
 Categories are dynamic: seeded with just **Other** (`isCustom: false`, undeletable), grown by the
@@ -514,6 +558,10 @@ Components call API functions from `api.ts` directly and then `refresh()`.
 | `PATCH /projects/:id/items/:itemId`              | partial-update a line item (`documentId: null` clears the link)                                                      |
 | `DELETE /projects/:id/items/:itemId`             | delete a line item                                                                                                   |
 | `GET /projects/by-document/:docId`               | line items linking a given document (the document → ledger direction)                                                |
+| `GET /holdings`                                  | the whole portfolio: holdings enriched with live price + computed returns, plus rollups (`PortfolioSnapshot`)         |
+| `POST /holdings`                                 | add a holding `{ symbol, name?, shares?, buyPrice?, manualPrice?, documentId?, notes? }` (400 without a symbol)       |
+| `PATCH /holdings/:id`                            | partial-update a holding (`documentId: null` clears the link)                                                        |
+| `DELETE /holdings/:id`                           | delete a holding                                                                                                     |
 
 ## 7. Where it's headed
 

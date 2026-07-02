@@ -19,6 +19,8 @@ import {
   LineItem,
   LineItemInput,
   DocumentLink,
+  Holding,
+  HoldingInput,
 } from '@stashd/shared';
 
 // Markers FTS5 snippet() wraps matches in; stripped before the snippet is
@@ -159,6 +161,36 @@ function rowToLineItem(row: LineItemRow): LineItem {
     status: row.status ?? undefined,
     notes: row.notes ?? undefined,
     documentId: row.document_id ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+interface HoldingRow {
+  id: string;
+  symbol: string;
+  name: string | null;
+  shares: number;
+  buy_price: number;
+  manual_price: number | null;
+  currency: string | null;
+  document_id: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+function rowToHolding(row: HoldingRow): Holding {
+  return {
+    id: row.id,
+    symbol: row.symbol,
+    name: row.name ?? undefined,
+    shares: row.shares,
+    buyPrice: row.buy_price,
+    manualPrice: row.manual_price ?? undefined,
+    currency: row.currency ?? undefined,
+    documentId: row.document_id ?? undefined,
+    notes: row.notes ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -366,6 +398,25 @@ export class StoreService {
       );
       CREATE INDEX IF NOT EXISTS idx_line_items_project ON line_items(project_id);
       CREATE INDEX IF NOT EXISTS idx_line_items_document ON line_items(document_id);
+
+      -- Portfolio: tracked stock holdings. Independent of documents;
+      -- document_id is a nullable, advisory link to a supporting doc (e.g. a
+      -- brokerage statement). Current price is never stored — it's fetched
+      -- live per request; manual_price is an optional per-share override.
+      CREATE TABLE IF NOT EXISTS holdings (
+        id TEXT PRIMARY KEY,
+        symbol TEXT NOT NULL,
+        name TEXT,
+        shares REAL NOT NULL DEFAULT 0,
+        buy_price REAL NOT NULL DEFAULT 0,
+        manual_price REAL,
+        currency TEXT,
+        document_id TEXT,
+        notes TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_holdings_document ON holdings(document_id);
     `);
   }
 
@@ -482,9 +533,10 @@ export class StoreService {
 
   removeDocument(id: string): boolean {
     const run = this.db.transaction(() => {
-      // Drop any ledger line-item links so they dangle harmlessly rather than
-      // pointing at a deleted document.
+      // Drop any ledger line-item and portfolio-holding links so they dangle
+      // harmlessly rather than pointing at a deleted document.
       this.db.prepare('UPDATE line_items SET document_id = NULL WHERE document_id = ?').run(id);
+      this.db.prepare('UPDATE holdings SET document_id = NULL WHERE document_id = ?').run(id);
       return this.db.prepare('DELETE FROM documents WHERE id = ?').run(id).changes > 0;
     });
     return run();
@@ -956,5 +1008,85 @@ export class StoreService {
       itemId: r.itemId,
       description: r.description,
     }));
+  }
+
+  // ── Portfolio (stock holdings) ────────────────────────────────────────────
+
+  listHoldings(): Holding[] {
+    const rows = this.db
+      .prepare('SELECT * FROM holdings ORDER BY symbol')
+      .all() as HoldingRow[];
+    return rows.map(rowToHolding);
+  }
+
+  getHolding(id: string): Holding | undefined {
+    const row = this.db.prepare('SELECT * FROM holdings WHERE id = ?').get(id) as HoldingRow | undefined;
+    return row ? rowToHolding(row) : undefined;
+  }
+
+  addHolding(holding: Holding): void {
+    this.db
+      .prepare(`
+        INSERT INTO holdings (
+          id, symbol, name, shares, buy_price, manual_price, currency, document_id, notes, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run(
+        holding.id,
+        holding.symbol,
+        holding.name ?? null,
+        holding.shares,
+        holding.buyPrice,
+        holding.manualPrice ?? null,
+        holding.currency ?? null,
+        holding.documentId ?? null,
+        holding.notes ?? null,
+        holding.createdAt,
+        holding.updatedAt,
+      );
+  }
+
+  // Partial update: only keys present on `updates` are written; `documentId:
+  // null` clears the link, mirroring the line-item convention.
+  updateHolding(id: string, updates: HoldingInput & { updatedAt: string }): Holding | undefined {
+    const existing = this.getHolding(id);
+    if (!existing) return undefined;
+    const has = (k: keyof HoldingInput) => Object.prototype.hasOwnProperty.call(updates, k);
+    const merged: Holding = {
+      ...existing,
+      symbol: has('symbol') ? updates.symbol ?? existing.symbol : existing.symbol,
+      name: has('name') ? updates.name : existing.name,
+      shares: has('shares') ? updates.shares ?? existing.shares : existing.shares,
+      buyPrice: has('buyPrice') ? updates.buyPrice ?? existing.buyPrice : existing.buyPrice,
+      manualPrice: has('manualPrice') ? updates.manualPrice : existing.manualPrice,
+      currency: has('currency') ? updates.currency : existing.currency,
+      documentId: has('documentId') ? updates.documentId ?? undefined : existing.documentId,
+      notes: has('notes') ? updates.notes : existing.notes,
+      updatedAt: updates.updatedAt,
+    };
+    this.db
+      .prepare(`
+        UPDATE holdings SET
+          symbol = ?, name = ?, shares = ?, buy_price = ?, manual_price = ?,
+          currency = ?, document_id = ?, notes = ?, updated_at = ?
+        WHERE id = ?
+      `)
+      .run(
+        merged.symbol,
+        merged.name ?? null,
+        merged.shares,
+        merged.buyPrice,
+        merged.manualPrice ?? null,
+        merged.currency ?? null,
+        merged.documentId ?? null,
+        merged.notes ?? null,
+        merged.updatedAt,
+        id,
+      );
+    return merged;
+  }
+
+  removeHolding(id: string): boolean {
+    return this.db.prepare('DELETE FROM holdings WHERE id = ?').run(id).changes > 0;
   }
 }

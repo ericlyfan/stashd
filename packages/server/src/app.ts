@@ -12,6 +12,7 @@ import { ChatService } from './services/ChatService';
 import { AgenticChatService } from './services/AgenticChatService';
 import { createChatRoutes } from './routes/chat';
 import { createProjectRoutes } from './routes/projects';
+import { createHoldingRoutes } from './routes/holdings';
 
 interface AppOverrides {
   classificationService?: ClassificationService;
@@ -54,6 +55,7 @@ export async function createApp(dataDir: string, overrides: AppOverrides = {}): 
   app.use('/api/categories', createCategoryRoutes({ store }));
   app.use('/api/chat', createChatRoutes({ store, chatService, agenticChatService }));
   app.use('/api/projects', createProjectRoutes({ store }));
+  app.use('/api/holdings', createHoldingRoutes({ store }));
 
   return app;
 }
