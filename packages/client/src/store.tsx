@@ -13,6 +13,7 @@ import {
   isSupportedFilename,
   mimeFromExtension,
   ProjectSummary,
+  SSEEvent,
   SUPPORTED_EXTENSIONS,
   UploadResponse,
 } from '@stashd/shared';
@@ -44,6 +45,9 @@ export interface QueueItem {
   classification?: ClassificationResult;
   // An already-filed document with identical bytes — warn, never block.
   duplicateOf?: UploadResponse['duplicate'];
+  // A content-level near-copy found at classify time (SimHash/dHash) — a softer
+  // advisory than an exact byte-match; only surfaced when duplicateOf is unset.
+  nearDuplicateOf?: SSEEvent['nearDuplicate'];
   error?: string;
   previewUrl: string;
 }
@@ -159,6 +163,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
                 status: 'ready',
                 stageMessage: 'Classified — ready to review',
                 classification: event.classification,
+                nearDuplicateOf: event.nearDuplicate,
               });
               // Pop the review sheet open if the user isn't already in one.
               if (reviewRef.current === null) setReviewItemId(id);

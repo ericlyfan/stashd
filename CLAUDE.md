@@ -6,7 +6,7 @@ It is the single living document for **Stashd** — both the _operating manual_ 
 verify, and not break things) and the _architecture & feature reference_ (how it all works). Keep this
 file honest and current; it is the project's memory and the first thing agents load.
 
-_Last updated: 2026-07-03 (sidebar footer now a **live clock + server status bar** (`GET /health` heartbeat) replacing the static tagline; dock toolbar mode toggle is **icon-only** so it never squishes the close button; ledger **"current project"** (`isDefault`, ★ toggle, sidebar deep-link); Inbox "Amounts tracked" removed. Prior same day: portfolio prices via Nasdaq fallback; ChatDock edge-resize; dock start screen simplified)_
+_Last updated: 2026-07-03 (**fuzzy near-duplicate detection**: alongside the exact SHA-256 check, docs now carry a 64-bit SimHash over `extractedText` and images a 64-bit dHash (`services/nearDuplicate.ts`, sharp); the classify SSE `complete` event flags a content-level near-copy (advisory, Hamming distance) via `store.findNearDuplicate`, surfaced as a softer ReviewSheet/tray banner. Prior same day: sidebar footer live clock + server status bar; icon-only dock mode toggle; ledger "current project"; portfolio Nasdaq fallback)_
 
 > **How this file is organized.** Part I is the operating manual — read it first. Part II is the
 > detailed architecture/feature reference; reach for the relevant section when you touch that area.
@@ -180,8 +180,16 @@ Embeddings run on a **separate, local** Ollama (the cloud endpoint serves no emb
   the index to the `trigram` tokenizer is the known fix if Chinese docs become common.
 - **Extraction quality is bounded by the source** — PDFs with broken embedded font encodings yield
   partially garbled `extractedText`; image text exists only if the model transcribed it at classify time.
-- **Duplicate detection is exact-bytes (SHA-256) only** — a re-scan/re-export of the same paper won't
-  be flagged. Detection is advisory, never a block.
+- **Duplicate detection is advisory, never a block** — two layers, both surfaced as banners the user
+  can ignore. **Exact** (SHA-256, at upload) catches byte-identical files. **Fuzzy near-dup**
+  (`services/nearDuplicate.ts`) catches re-scans/re-exports/emailed copies: a 64-bit **SimHash** over
+  `extractedText` (text docs) and a 64-bit **dHash** over the image (via sharp), matched by **Hamming
+  distance** (`SIMHASH_MAX_DISTANCE`/`PHASH_MAX_DISTANCE`; tune those constants). The near-dup check
+  runs at the classify SSE `complete` stage (the first point the incoming doc's text/image exists) and
+  only when no exact dup matched. Both signatures are stored (`sim_hash`/`perceptual_hash` columns,
+  guarded migration) and backfilled at boot; a linear Hamming scan is fine at personal-stash scale.
+  Signatures are 16-hex 64-bit strings; `simhash64` returns undefined below `SIMHASH_MIN_CHARS` (short
+  text collides too easily), `perceptualHash` never throws (decode failure → no signature).
 - **Abandoned uploads leak temp dirs.** UI-discarded/skipped uploads clean up via
   `DELETE /documents/job/:jobId`, but uploads abandoned by closing the tab leave `data/temp/<jobId>/`
   (and possibly an `.extracted.txt` sidecar) indefinitely — there's no sweep job.
@@ -269,7 +277,10 @@ embeddings use a separate local Ollama (see Part I env vars).
    with errors surfaced). When classification lands, the **ReviewSheet** opens: original document on
    the left (pdf.js render or image), the proposed filing fully editable on the right, including
    accepting/creating a new category and a "flag for later" toggle. Duplicates show a warning banner
-   linking to the existing document. After filing, the sheet auto-advances to the next ready item, so a
+   linking to the existing document — a gold **byte-identical** banner (exact SHA at upload) or a
+   softer dashed **near-copy** banner with a similarity % (content-level SimHash/dHash match computed at
+   the classify `complete` stage; only shown when no exact dup matched). After filing, the sheet
+   auto-advances to the next ready item, so a
    batch can be reviewed back-to-back. A **Discard** button (and the tray's per-file/bulk skips) drops
    the upload entirely — client item and server temp dir both — without filing anything.
 4. **File** — `POST /api/documents/file/:jobId` persists the document: creates the category if new

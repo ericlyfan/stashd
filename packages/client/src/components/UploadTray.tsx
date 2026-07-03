@@ -103,6 +103,16 @@ export default function UploadTray() {
                       </span>
                     </div>
                   )}
+                  {!item.duplicateOf && item.nearDuplicateOf && (
+                    <div className="t-dup">
+                      <Copy size={11} strokeWidth={2} />
+                      <span>
+                        Near-copy of{' '}
+                        <Link to={`/doc/${item.nearDuplicateOf.id}`}>{item.nearDuplicateOf.originalName}</Link> (
+                        {Math.round(item.nearDuplicateOf.similarity * 100)}% similar)
+                      </span>
+                    </div>
+                  )}
                   {busy && <div className="scanline" />}
                 </div>
                 {item.status === 'ready' && (

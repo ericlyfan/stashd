@@ -171,6 +171,19 @@ export default function ReviewSheet() {
                 </span>
               </div>
             )}
+            {!item.duplicateOf && item.nearDuplicateOf && (
+              <div className="dup-banner dup-banner--near">
+                <Copy size={14} strokeWidth={2} />
+                <span>
+                  This looks like a near-copy of{' '}
+                  <Link to={`/doc/${item.nearDuplicateOf.id}`} onClick={() => openReview(null)}>
+                    {item.nearDuplicateOf.originalName}
+                  </Link>{' '}
+                  ({Math.round(item.nearDuplicateOf.similarity * 100)}% similar) — a re-scan or re-export,
+                  maybe. You can still file it if you mean to.
+                </span>
+              </div>
+            )}
             <div className="ai-note">
               <Sparkles size={13} style={{ color: 'var(--gold)' }} />
               <span>AI classification</span>

@@ -18,6 +18,7 @@ import {
 } from "@stashd/shared";
 import { buildCustomCategory, slugifyCategory } from "../services/categoryStyle";
 import { extractText, hashBuffer } from "../services/textExtraction";
+import { perceptualHash, perceptualHashFile, simhash64 } from "../services/nearDuplicate";
 import { EmailAttachment, parseEmail } from "../services/emailParse";
 
 const EMAIL_MIMES = ["message/rfc822", "application/vnd.ms-outlook"];
@@ -85,6 +86,10 @@ export function createDocumentRoutes(services: Services): Router {
       notes: `Attachment from email “${parent.originalName}”.`,
       extractedText,
       contentHash: hashBuffer(att.content),
+      simHash: simhash64(extractedText),
+      perceptualHash: mimeType.startsWith("image/")
+        ? await perceptualHash(att.content, mimeType)
+        : undefined,
       createdAt: now,
       updatedAt: now,
     };
@@ -192,7 +197,27 @@ export function createDocumentRoutes(services: Services): Router {
       // re-extracted without another model call).
       if (extractedText) await fileService.saveJobText(jobId, extractedText);
 
-      send({ stage: "complete", message: "Classification complete", classification });
+      // Advisory near-duplicate check: an exact byte-duplicate was already
+      // caught at upload (a superset), so only look for a content-level
+      // near-copy here, where the incoming doc's text/image is available.
+      let nearDuplicate: SSEEvent["nearDuplicate"];
+      const simHash = simhash64(extractedText);
+      const pHash = mimeType.startsWith("image/")
+        ? await perceptualHash(await readFile(filePath), mimeType)
+        : undefined;
+      if (simHash || pHash) {
+        const match = store.findNearDuplicate({ simHash, perceptualHash: pHash });
+        if (match) {
+          nearDuplicate = {
+            id: match.doc.id,
+            originalName: match.doc.originalName,
+            category: match.doc.category,
+            similarity: match.similarity,
+          };
+        }
+      }
+
+      send({ stage: "complete", message: "Classification complete", classification, nearDuplicate });
     } catch (err) {
       const error = err instanceof Error ? err.message : "Unknown error";
       send({ stage: "error", message: "Classification failed", error });
@@ -256,6 +281,11 @@ export function createDocumentRoutes(services: Services): Router {
     }
     await fileService.deleteJobText(jobId);
 
+    // Near-duplicate signatures (advisory): SimHash over text, dHash over the
+    // image, so future uploads can be matched against this document.
+    const simHash = simhash64(extractedText);
+    const documentPerceptualHash = await perceptualHashFile(tempPath, mimeType);
+
     const storagePath = await fileService.moveToDocuments(jobId, categoryId, id, originalName);
 
     const now = new Date().toISOString();
@@ -278,6 +308,8 @@ export function createDocumentRoutes(services: Services): Router {
       notes,
       extractedText,
       contentHash,
+      simHash,
+      perceptualHash: documentPerceptualHash,
       createdAt: now,
       updatedAt: now,
     };

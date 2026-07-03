@@ -23,9 +23,15 @@ export interface Document {
   // model transcription for images). Capped, and absent for older documents
   // until backfilled.
   extractedText?: string;
-  // SHA-256 of the file bytes, used for duplicate detection. Backfilled at
-  // boot for documents filed before the feature existed.
+  // SHA-256 of the file bytes, used for exact duplicate detection. Backfilled
+  // at boot for documents filed before the feature existed.
   contentHash?: string;
+  // Content-level near-duplicate signatures (advisory): a 64-bit SimHash over
+  // extractedText (text docs) and a 64-bit dHash over the image (images), each
+  // a 16-hex string. Absent when not applicable (no text / not an image) or
+  // until backfilled. See services/nearDuplicate.ts.
+  simHash?: string;
+  perceptualHash?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -86,6 +92,15 @@ export interface SSEEvent {
   stage: ProcessingStage;
   message: string;
   classification?: ClassificationResult;
+  // A content-level near-duplicate found at classify time (SimHash/dHash within
+  // threshold of an already-filed doc). Advisory, never a block; only set on the
+  // `complete` event, and only when no exact byte-duplicate matched at upload.
+  nearDuplicate?: {
+    id: string;
+    originalName: string;
+    category: CategoryId;
+    similarity: number;
+  };
   error?: string;
 }
 

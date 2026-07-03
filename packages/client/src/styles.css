@@ -1014,6 +1014,17 @@ body.chat-drag-over .drop-curtain {
   margin-bottom: 14px;
 }
 
+/* Softer, more tentative than the exact byte-duplicate banner — a fuzzy
+   content match is a hint, not a certainty. */
+.dup-banner--near {
+  border-color: var(--ink-faint);
+  border-style: dashed;
+  background: color-mix(in srgb, var(--ink-3) 7%, transparent);
+}
+.dup-banner--near svg {
+  color: var(--ink-3);
+}
+
 .dup-banner svg {
   flex-shrink: 0;
   margin-top: 2px;

@@ -23,6 +23,11 @@ import {
   Holding,
   HoldingInput,
 } from '@stashd/shared';
+import {
+  hammingHex,
+  SIMHASH_MAX_DISTANCE,
+  PHASH_MAX_DISTANCE,
+} from './nearDuplicate';
 
 // Markers FTS5 snippet() wraps matches in; stripped before the snippet is
 // sent to the client, and used to tell "real match in body text" apart from
@@ -54,6 +59,8 @@ interface DocumentRow {
   notes: string | null;
   extracted_text: string | null;
   content_hash: string | null;
+  sim_hash: string | null;
+  perceptual_hash: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -88,6 +95,8 @@ function rowToDocument(row: DocumentRow): Document {
     notes: row.notes ?? undefined,
     extractedText: row.extracted_text ?? undefined,
     contentHash: row.content_hash ?? undefined,
+    simHash: row.sim_hash ?? undefined,
+    perceptualHash: row.perceptual_hash ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -246,6 +255,7 @@ export class StoreService {
     this.migrateCategoryColumns();
     this.migrateConversationColumns();
     this.migrateProjectColumns();
+    this.migrateDocumentColumns();
     this.migrateFromManifest();
     if ((this.db.prepare('SELECT COUNT(*) AS n FROM categories').get() as { n: number }).n === 0) {
       for (const cat of DEFAULT_CATEGORIES) this.addCategory(cat);
@@ -271,6 +281,19 @@ export class StoreService {
     const cols = (this.db.prepare('PRAGMA table_info(conversations)').all() as { name: string }[]).map(c => c.name);
     if (!cols.includes('mode')) {
       this.db.exec("ALTER TABLE conversations ADD COLUMN mode TEXT NOT NULL DEFAULT 'classic'");
+    }
+  }
+
+  // Adds the near-duplicate signature columns (SimHash over text, dHash over
+  // images) to databases created before fuzzy dup detection. Same guarded
+  // ALTER pattern; backfilled for existing docs by backfillDerivedFields.
+  private migrateDocumentColumns(): void {
+    const cols = (this.db.prepare('PRAGMA table_info(documents)').all() as { name: string }[]).map(c => c.name);
+    if (!cols.includes('sim_hash')) {
+      this.db.exec('ALTER TABLE documents ADD COLUMN sim_hash TEXT');
+    }
+    if (!cols.includes('perceptual_hash')) {
+      this.db.exec('ALTER TABLE documents ADD COLUMN perceptual_hash TEXT');
     }
   }
 
@@ -313,6 +336,8 @@ export class StoreService {
         notes TEXT,
         extracted_text TEXT,
         content_hash TEXT,
+        sim_hash TEXT,
+        perceptual_hash TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -497,17 +522,52 @@ export class StoreService {
     return row ? rowToDocument(row) : undefined;
   }
 
+  // Advisory near-duplicate lookup: the closest already-filed document whose
+  // near-dup signature is within threshold of the given one. Prefers the image
+  // dHash when a perceptualHash is supplied, else the text SimHash. Linear scan
+  // (a personal stash is small enough that no index is warranted). Returns the
+  // match plus a 0..1 similarity (1 - distance/64); undefined if nothing is
+  // close enough.
+  findNearDuplicate(sig: {
+    simHash?: string;
+    perceptualHash?: string;
+    excludeId?: string;
+  }): { doc: Document; similarity: number } | undefined {
+    const useImage = !!sig.perceptualHash;
+    const column = useImage ? 'perceptual_hash' : 'sim_hash';
+    const target = useImage ? sig.perceptualHash! : sig.simHash;
+    const maxDistance = useImage ? PHASH_MAX_DISTANCE : SIMHASH_MAX_DISTANCE;
+    if (!target) return undefined;
+
+    const rows = this.db
+      .prepare(`SELECT * FROM documents WHERE ${column} IS NOT NULL`)
+      .all() as DocumentRow[];
+
+    let best: { doc: Document; distance: number } | undefined;
+    for (const row of rows) {
+      if (sig.excludeId && row.id === sig.excludeId) continue;
+      const candidate = useImage ? row.perceptual_hash : row.sim_hash;
+      const distance = hammingHex(target, candidate);
+      if (distance <= maxDistance && (!best || distance < best.distance)) {
+        best = { doc: rowToDocument(row), distance };
+      }
+    }
+    return best ? { doc: best.doc, similarity: 1 - best.distance / 64 } : undefined;
+  }
+
   addDocument(doc: Document): void {
     this.db
       .prepare(`
         INSERT INTO documents (
           id, filename, original_name, storage_path, file_type, file_size,
           category, subcategory, tags, summary, date_extracted, amount, vendor,
-          confidence_score, status, notes, extracted_text, content_hash, created_at, updated_at
+          confidence_score, status, notes, extracted_text, content_hash,
+          sim_hash, perceptual_hash, created_at, updated_at
         ) VALUES (
           @id, @filename, @originalName, @storagePath, @fileType, @fileSize,
           @category, @subcategory, @tags, @summary, @dateExtracted, @amount, @vendor,
-          @confidenceScore, @status, @notes, @extractedText, @contentHash, @createdAt, @updatedAt
+          @confidenceScore, @status, @notes, @extractedText, @contentHash,
+          @simHash, @perceptualHash, @createdAt, @updatedAt
         )
       `)
       .run({
@@ -520,6 +580,8 @@ export class StoreService {
         notes: doc.notes ?? null,
         extractedText: doc.extractedText ?? null,
         contentHash: doc.contentHash ?? null,
+        simHash: doc.simHash ?? null,
+        perceptualHash: doc.perceptualHash ?? null,
       });
   }
 
@@ -528,7 +590,16 @@ export class StoreService {
     updates: Partial<
       Pick<
         Document,
-        'category' | 'tags' | 'notes' | 'status' | 'updatedAt' | 'extractedText' | 'contentHash' | 'originalName'
+        | 'category'
+        | 'tags'
+        | 'notes'
+        | 'status'
+        | 'updatedAt'
+        | 'extractedText'
+        | 'contentHash'
+        | 'simHash'
+        | 'perceptualHash'
+        | 'originalName'
       >
     >,
   ): Document | undefined {
@@ -539,7 +610,8 @@ export class StoreService {
       .prepare(`
         UPDATE documents SET
           category = ?, tags = ?, notes = ?, status = ?,
-          extracted_text = ?, content_hash = ?, original_name = ?, updated_at = ?
+          extracted_text = ?, content_hash = ?, sim_hash = ?, perceptual_hash = ?,
+          original_name = ?, updated_at = ?
         WHERE id = ?
       `)
       .run(
@@ -549,6 +621,8 @@ export class StoreService {
         merged.status,
         merged.extractedText ?? null,
         merged.contentHash ?? null,
+        merged.simHash ?? null,
+        merged.perceptualHash ?? null,
         merged.originalName,
         merged.updatedAt,
         id,

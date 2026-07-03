@@ -5,6 +5,7 @@ import { extensionOf } from '@stashd/shared';
 import { StoreService } from './StoreService';
 import { FileService } from './FileService';
 import { emailToText, parseEmail } from './emailParse';
+import { perceptualHashFile, simhash64 } from './nearDuplicate';
 
 // Keep stored text bounded: enough for search, not the whole book.
 export const MAX_EXTRACTED_CHARS = 20_000;
@@ -112,7 +113,13 @@ export async function backfillDerivedFields(
 ): Promise<void> {
   let changed = 0;
   for (const doc of store.getDocuments()) {
-    const updates: { extractedText?: string; contentHash?: string; originalName?: string } = {};
+    const updates: {
+      extractedText?: string;
+      contentHash?: string;
+      simHash?: string;
+      perceptualHash?: string;
+      originalName?: string;
+    } = {};
 
     const repairedName = repairMojibakeName(doc.originalName);
     if (repairedName) updates.originalName = repairedName;
@@ -127,6 +134,18 @@ export async function backfillDerivedFields(
       } catch {
         // File missing on disk — nothing to hash.
       }
+    }
+
+    // Near-dup signatures for the pre-existing corpus so re-uploads match it.
+    // SimHash reads whatever text we have (just-extracted or already stored);
+    // the perceptual hash decodes images from disk (a no-op for other types).
+    if (doc.simHash === undefined) {
+      const sim = simhash64(updates.extractedText ?? doc.extractedText);
+      if (sim) updates.simHash = sim;
+    }
+    if (doc.perceptualHash === undefined) {
+      const pHash = await perceptualHashFile(fileService.absolutePath(doc.storagePath), doc.fileType);
+      if (pHash) updates.perceptualHash = pHash;
     }
 
     if (Object.keys(updates).length > 0) {
