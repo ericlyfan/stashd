@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
-import { ChatMessage, ChatSSEEvent, Citation, Document, ToolCallRecord } from '@stashd/shared';
+import { ChatAttachment, ChatMessage, ChatSSEEvent, Citation, Document, ToolCallRecord } from '@stashd/shared';
 import { StoreService } from './StoreService';
 import {
   AgentMessage,
@@ -137,6 +137,17 @@ function pinnedContext(docs: Document[]): AgentMessage | undefined {
   };
 }
 
+function attachmentContext(attachments: ChatAttachment[]): AgentMessage | undefined {
+  if (!attachments.length) return undefined;
+  const content = attachments
+    .map(a => `--- Attached file "${a.name}" (${a.mime}) ---\n${a.text.slice(0, PINNED_TEXT_CAP)}`)
+    .join('\n\n');
+  return {
+    role: 'system',
+    content: `The user attached these files to this conversation as context only — they are NOT in the stash and have no [doc:] id to cite, but treat them as primary source material for this question.\n\n${content}`,
+  };
+}
+
 export class AgenticChatService {
   constructor(private readonly store: StoreService) {}
 
@@ -182,7 +193,7 @@ export class AgenticChatService {
         traceSink,
       );
       const result = await agent.run(userText, {
-        contextMessages: this.contextMessages(conversation.messages, conversation.pinnedDocIds),
+        contextMessages: this.contextMessages(conversation.messages, conversation.pinnedDocIds, conversation.attachments),
         // Stream the answer token-by-token. Deliberation text from a round that
         // ends in a tool call is discarded client-side on the `tool` event,
         // exactly as classic chat does.
@@ -215,7 +226,7 @@ export class AgenticChatService {
     }
   }
 
-  private contextMessages(history: ChatMessage[], pinnedDocIds: string[]): AgentMessage[] {
+  private contextMessages(history: ChatMessage[], pinnedDocIds: string[], attachments: ChatAttachment[]): AgentMessage[] {
     const messages: AgentMessage[] = [this.rosterContext()];
 
     const pinned = pinnedDocIds
@@ -223,6 +234,9 @@ export class AgenticChatService {
       .filter((doc): doc is Document => !!doc);
     const pinnedMsg = pinnedContext(pinned);
     if (pinnedMsg) messages.push(pinnedMsg);
+
+    const attachmentMsg = attachmentContext(attachments);
+    if (attachmentMsg) messages.push(attachmentMsg);
 
     for (const msg of history.slice(-HISTORY_LIMIT)) {
       messages.push({ role: msg.role, content: msg.content });

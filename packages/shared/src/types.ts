@@ -130,9 +130,23 @@ export interface ChatMessage {
   createdAt: string;
 }
 
+// A file dropped directly into a conversation as throwaway context — its text
+// is extracted and read by the model, but it is never filed into the stash.
+// Conversation-scoped and deleted with the conversation.
+export interface ChatAttachment {
+  id: string;
+  conversationId: string;
+  name: string;
+  mime: string;
+  // Extracted text (capped). Empty when extraction yielded nothing.
+  text: string;
+  createdAt: string;
+}
+
 export interface ConversationDetail extends Conversation {
   messages: ChatMessage[];
   pinnedDocIds: string[];
+  attachments: ChatAttachment[];
 }
 
 // SSE stream for POST /chat/:id/messages. `token` events carry answer text as
@@ -157,6 +171,10 @@ export interface Project {
   name: string;
   description?: string;
   status: ProjectStatus;
+  // Marks the project as a "current" one. When exactly one project is default,
+  // the sidebar's Ledgers entry opens it directly; with zero or several, it
+  // falls back to the normal project index.
+  isDefault: boolean;
   createdAt: string;
   updatedAt: string;
 }

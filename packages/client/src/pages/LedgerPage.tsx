@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { Archive, ArchiveRestore, ArrowLeft, BookOpen, LucideIcon, Paperclip, Pencil, Plus, Store, Tags, Trash2, TrendingUp } from 'lucide-react';
+import { Archive, ArchiveRestore, ArrowLeft, BookOpen, LucideIcon, Paperclip, Pencil, Plus, Star, Store, Tags, Trash2, TrendingUp } from 'lucide-react';
 import { LineItem, LineItemInput, ProjectDetail } from '@stashd/shared';
 import {
   addLineItem,
@@ -191,6 +191,21 @@ export default function LedgerPage() {
     }
   }
 
+  // Mark/unmark this as the "current" project. When it's the only default, the
+  // sidebar's Ledgers entry opens straight to it.
+  async function toggleDefault() {
+    if (!detail) return;
+    const next = !detail.isDefault;
+    try {
+      await updateProject(detail.id, { isDefault: next });
+      await load();
+      await refresh();
+      notify(next ? `“${detail.name}” is now your current project` : 'Cleared current project');
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Could not update project', 'err');
+    }
+  }
+
   async function removeProject() {
     if (!detail) return;
     setBusy(true);
@@ -236,6 +251,14 @@ export default function LedgerPage() {
           <button className="btn btn-primary btn-sm" onClick={() => setAdding(true)}>
             <Plus size={14} />
             Add line item
+          </button>
+          <button
+            className={`btn btn-sm ${detail.isDefault ? 'btn-wax' : 'btn-ghost'}`}
+            onClick={toggleDefault}
+            title={detail.isDefault ? 'Your current project — click to clear' : 'Set as your current project'}
+          >
+            <Star size={13} fill={detail.isDefault ? 'currentColor' : 'none'} />
+            {detail.isDefault ? 'Current' : 'Set current'}
           </button>
           <button className="btn btn-ghost btn-sm" title="Edit project" onClick={() => setEditingProject(true)}>
             <Pencil size={13} />

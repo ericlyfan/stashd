@@ -6,7 +6,7 @@ It is the single living document for **Stashd** — both the _operating manual_ 
 verify, and not break things) and the _architecture & feature reference_ (how it all works). Keep this
 file honest and current; it is the project's memory and the first thing agents load.
 
-_Last updated: 2026-07-02 (new **Portfolio** section (`/portfolio`) — stock holdings with live Yahoo prices, per-holding + portfolio gain/loss, and optional stash-document links)_
+_Last updated: 2026-07-03 (sidebar footer now a **live clock + server status bar** (`GET /health` heartbeat) replacing the static tagline; dock toolbar mode toggle is **icon-only** so it never squishes the close button; ledger **"current project"** (`isDefault`, ★ toggle, sidebar deep-link); Inbox "Amounts tracked" removed. Prior same day: portfolio prices via Nasdaq fallback; ChatDock edge-resize; dock start screen simplified)_
 
 > **How this file is organized.** Part I is the operating manual — read it first. Part II is the
 > detailed architecture/feature reference; reach for the relevant section when you touch that area.
@@ -75,7 +75,7 @@ npm-workspaces monorepo; three packages under `packages/`.
   - `emailParse.ts` — `.eml`/`.msg` → headers + body + attachments.
   - `EmbeddingService.ts` — chunk + embed (local Ollama), vector index lifecycle.
   - `ChatService.ts` — RAG retrieval + tool loop.
-  - `QuoteService.ts` — live stock quotes from Yahoo's public chart endpoint (no key), briefly cached, failure-tolerant.
+  - `QuoteService.ts` — live stock quotes via a provider chain (Yahoo → Nasdaq → stale cache), no key, briefly cached, failure-tolerant.
   - `categoryStyle.ts` — auto icon/color for new categories.
 - `providers/` — model-provider registry keyed by `PROVIDER`; `OllamaProvider` is the only impl.
 - `agentic/` — standalone experimental document agent loop (`glm-4.7:cloud` by default) with swappable
@@ -327,11 +327,39 @@ full text up to 8k chars each) ride along as primary context. The model (same cl
 classification) then runs a native **tool loop** (max 6 rounds, streamed): `search_docs` (FTS),
 `read_doc` (full text, 12k cap), `update_doc` (re-categorize — creating drawers if needed —, add/remove
 tags, flag/unflag; only on explicit user request), `list_categories`, plus the Ledgers tools
-`list_projects` / `read_project` (see §3c). Answers cite inline as `[doc:<id>]`; the server parses
+`list_projects` / `read_project` (read) and `create_project` / `add_line_item` (**write** — record a
+cost against a project, creating the ledger first if needed; gated on explicit user request in the
+prompt, same as `update_doc`; `add_line_item` resolves the project by id/name and defaults
+`totalPaid = amountPaid + taxAmount` when omitted, mirroring the line-item dialog) (see §3c). A
+ledger-write tool triggers a client `refresh()` just like `update_doc`. Answers cite inline as `[doc:<id>]`; the server parses
 these into `citations` (id + name, surviving later doc deletion) and persists tool calls as
 human-readable records. History sent to the model is capped at the last 20 messages.
 
-**Client** (`pages/ChatPage.tsx`): a **single-column page** (no second sidebar) under the global nav.
+**Attach a file to just the chat** (chat-only context): dropping a file **onto the chat** (dock or full
+page) attaches it as throwaway context rather than filing it. `POST /chat/:id/attachments` (multer,
+extension-validated) runs the `textExtraction.ts` `extractText` dispatcher, caps the text at 20k, and
+stores a row in `chat_attachments` (conversation-scoped, deleted with the conversation, **never** in the
+stash / FTS / vec index). `getConversation` returns `attachments`, and both `ChatService.buildMessages`
+and `AgenticChatService` inject each attachment's text into the system prompt like a pinned doc (but
+with no `[doc:]` id to cite). **Text-bearing types only** — images carry no extractable text and are
+rejected (400); a file that yields no text is refused (422). The chat's drop handler `stopPropagation`s
+so the global classify-and-file curtain (`DropZone.tsx`, now `pointer-events:none` and hidden via a
+`body.chat-drag-over` class while dragging over the chat) doesn't also fire.
+
+**Client** — the chat UI is a reusable **`components/ChatSurface.tsx`** (all state/logic: messages,
+pins, attachments, stream, mode, `send()`, SSE, citations) hosted in **two shells**: the full-page
+route (`pages/ChatPage.tsx`, a thin wrapper wiring `convId`/`onConvIdChange` to the router) and a
+floating **`components/ChatDock.tsx`** (draggable by its top bar; **resizable from the top and left edges
++ top-left corner** — handles live on the sides away from the toolbar buttons so a bottom-right-docked
+panel grows up/left; rect persisted to `localStorage` `stashd.chatDock`; z-index 90, below modal scrims).
+Its top toolbar is compacted in the dock variant (`.chat-layout--dock`: truncated history title,
+icon-only New chat, tighter mode toggle) so it doesn't overflow the narrow panel. A shared
+**`ChatDockContext`** (mounted in `App.tsx` above `<Routes>`) holds `{ open, activeConvId }` so the panel
+and its conversation survive navigation. The **corner `ChatLauncher`** opens the dock (`openDock()`); the
+**sidebar "Ask the stash"** link goes to the **full-page** `/chat` (a plain `NavLink`), and the dock's
+**Expand** button also hands off to the full page (`/chat/:id`).
+`ChatSurface` takes `variant: 'page' | 'dock'` and optional `onExpand`/`onClose`/`onHeaderPointerDown`.
+The full-page view: a **single-column page** (no second sidebar) under the global nav.
 A slim **top bar** holds a `History ▾` dropdown (past conversations — active highlight, **Agentic**
 badge, relative date, delete; the `HistoryMenu` popover replaced the old "Correspondence" rail) on the
 left, and the mode toggle (thread view only) + a **New chat** button on the right. The active
@@ -363,7 +391,8 @@ errors returned as tool messages, compact JSON tool results, and per-step trace 
 reaches parity with the classic chat: document tools (`search_docs`, `read_doc`, `list_categories`,
 and `update_doc` — re-categorize / tag / flag, gated on explicit user request in the system prompt) and
 ledger tools (`list_projects`, `read_project`, including optional line-item filtering such as project
-`4190` + query `Costco`). Document tools go through the `AgentDocumentCorpus` seam: `StoreDocumentCorpus`
+`4190` + query `Costco`, plus the **write** tools `create_project` / `add_line_item` — same gating and
+`totalPaid` defaulting as classic). Document tools go through the `AgentDocumentCorpus` seam: `StoreDocumentCorpus`
 adapts the real `StoreService` (and resolves a truncated/prefix doc id the way citations do), while
 `FixtureDocumentCorpus` supports standalone smoke tests without a database or live model.
 `AgenticChatService` wraps this loop with normal chat persistence, pinned-doc context, a lightweight
@@ -382,15 +411,20 @@ by line — a purpose-built alternative to a cost-tracking spreadsheet. It conne
 organizer only through optional, two-way links.
 
 **Model** (`projects` + `line_items` tables, plain SQLite — no FTS/vec): a **project** has a name,
-optional description, and `status: active | archived`. Each **line item** captures category,
+optional description, `status: active | archived`, and an `isDefault` "current project" flag
+(`is_default` column, guarded migration). Each **line item** captures category,
 vendor/contractor, description/milestone, quantity, date paid, invoice number, amount requested, amount
 paid (pre-tax), GST/HST, total paid, status, and notes — plus an optional `document_id`. Categories and
 vendors aren't a managed list: each item carries its own text, and the project page derives the distinct
 sets for `<datalist>` autocomplete and for the **by-category / by-vendor** breakdowns. Money rollups
 (requested / paid / tax / total) are computed per request in `StoreService.sumTotals`, never stored.
 
-**Document links are bidirectional.** A line item may link one stash document as supporting evidence
-(picked via the same search-popover the chat uses for pins). The document page shows a **"Cited in
+**Document links are bidirectional.** A line item may link one stash document as supporting evidence,
+chosen from the `LineItemDialog`'s **full-window document browser** (`DocumentBrowser` in
+`components/LineItemDialog.tsx`): a search box (name/vendor/folder/tag/summary), a left folder rail
+that filters by drawer, and a scrollable list showing each document's full (two-line-clamped) name,
+folder, vendor, date and amount. It opens from the "link a document" trigger or the "Change" button on
+an existing link. (The chat's pin picker still uses the compact `.pin-pop` popover.) The document page shows a **"Cited in
 ledgers"** card listing every line item that references it (`GET /api/projects/by-document/:docId`).
 Deleting a document nulls those links inside `removeDocument`'s transaction, so they dangle harmlessly.
 
@@ -402,6 +436,13 @@ timeline** (`components/SpendTimeline.tsx`), and the line-item table (dense, tab
 - tax until the user overrides it, plus the document picker). `ProjectDialog` handles create/edit.
   Projects ride along in the global `store` (loaded with docs + categories in `refresh()`), so the
   sidebar shows an active-project count.
+
+**Current ("default") project:** a project page's **★ Set current** toggle sets `isDefault` (`PATCH
+/projects/:id { isDefault }`); the index cards show a **Current** badge. When **exactly one** project is
+default, the sidebar's **Ledgers** entry deep-links straight to it (`/ledger/:id`) — the "jump to what
+I'm working on" shortcut; with **zero or several** defaults it falls back to the `/ledgers` index (normal
+selection). Deliberately not enforced to a single default in the DB — the sidebar just treats "not
+exactly one" as the index case, and the `/ledgers` index always lists everything so you can re-pick.
 
 **Spend timeline** (`components/SpendTimeline.tsx`): a chart of line-item `totalPaid` over time with
 three modes — **Monthly**, **Quarterly**, **By category**. Time buckets are gap-filled (it walks
@@ -424,14 +465,18 @@ price is never stored** — it's fetched live per request; `manualPrice` is the 
 (cost basis / market value / gain / return / day-change) are computed per request in the route's
 `buildSnapshot`, never persisted.
 
-**Live prices** (`QuoteService.ts`): `fetchQuotes` hits Yahoo Finance's public chart endpoint
-(`query1.finance.yahoo.com/v8/finance/chart/<SYMBOL>`, no API key), reading `meta.regularMarketPrice`
-and `chartPreviousClose`. It dedupes + upper-cases symbols, caches quotes ~60s, fetches misses
-concurrently, and **never throws** — a network error, blocked egress, or malformed JSON just yields no
-quote. This is an **unofficial** endpoint and requires a browser-like `User-Agent`. **Egress note:**
-some networks (including the sandboxed Claude Code web environment) block this host at the proxy; when
-that happens `quotesLive` comes back `false` and holdings show their manual price or render unpriced.
-Runs fine against a normal local network.
+**Live prices** (`QuoteService.ts`): `fetchQuotes` resolves each symbol through a **provider chain**, no
+API key: **(1) Yahoo** chart endpoint (`/v8/finance/chart/<SYMBOL>`, `meta.regularMarketPrice` +
+`chartPreviousClose`) with a **primed session cookie** and **query1 → query2** failover; **(2) Nasdaq**
+public quote API (`api.nasdaq.com/api/quote/<SYMBOL>/info?assetclass=stocks|etf`, parsing the
+`$1,234.56`/`+2.85` strings, deriving previous close from `netChange`) — tries `stocks` then `etf`, so it
+covers NYSE/Nasdaq equities and ETFs; **(3)** the **last cached quote** (stale up to 24h) so a refresh
+outage doesn't blank the portfolio. It dedupes + upper-cases symbols, caches fresh quotes ~60s, fetches
+concurrently, and **never throws**. Both providers need a browser-like `User-Agent`. **Why the chain:**
+Yahoo rate-limits aggressively (HTTP 429) and is unreachable from some IPs (including this sandbox);
+Nasdaq is the reliable fallback that made the feature actually work. If both are unreachable, `quotesLive`
+is `false` and holdings show their `manualPrice` or render unpriced (the always-works manual fallback),
+with a "live prices unavailable" note.
 
 **Price resolution & returns** (`routes/holdings.ts`): per holding the current price resolves to the
 live quote (`priceSource: 'live'`), else the manual override (`'manual'`), else nothing (`'none'`,
@@ -489,9 +534,18 @@ classifier proposing new ones, or created by the user.
 
 **Pages** (react-router):
 
-- **Inbox `/`** — drop tray, upload tray (in-flight jobs), stat tiles (docs, drawers in use, flagged
-  count, total tracked amounts), flagged-for-review list, six most recent docs, and a "cabinet" of
-  category cards.
+- **Inbox `/`** — the big drop tray, three stat tiles (docs, drawers in use, flagged count),
+  flagged-for-review list, six most recent docs, and a "cabinet" of category cards.
+- **Sidebar footer** carries a **live clock** (`components/Clock.tsx`, day · date · time-to-the-second)
+  and a **server status bar** (`components/StatusBar.tsx`) that heartbeats `GET /api/health` every 15s
+  (and on tab-refocus) — a pulsing green "Local server · live" or red "offline". Both are their own
+  components so their timers re-render only themselves, not the whole sidebar. (These replaced the old
+  static "local-first" footer tagline.)
+- **Global uploads dock** — `UploadTray` is mounted globally in `App.tsx` (not the Inbox), so it floats
+  as a collapsible dock in the **bottom-left corner of every page** whenever the upload queue is
+  non-empty (in-flight jobs, progress header, bulk skip, and click-to-review "ready" items). Combined
+  with the always-global `ReviewSheet` auto-opening on classify-complete, a file dropped on any page can
+  be reviewed there without returning to the Inbox.
 - **All documents `/all`** — sort (newest/oldest/A–Z/amount) + "flagged only" filter.
 - **Category `/category/:id`** — the drawer's docs, doc-count and summed amounts in the header, plus
   Edit / Move-all / Remove actions.
@@ -529,6 +583,7 @@ Components call API functions from `api.ts` directly and then `refresh()`.
 
 | Method & path                                    | Purpose                                                                                                              |
 | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| `GET /health`                                    | liveness probe → `{ ok: true }` (sidebar status-bar heartbeat)                                                       |
 | `POST /documents/upload`                         | multipart upload → `{ jobId, duplicate? }` (413 over 50 MB, 400 bad type)                                            |
 | `DELETE /documents/job/:jobId`                   | discard an in-flight upload (temp dir + sidecar); idempotent 204                                                     |
 | `GET /documents/process/:jobId`                  | SSE: `extracting → classifying → complete` (with classification) or `error`                                          |
@@ -545,14 +600,16 @@ Components call API functions from `api.ts` directly and then `refresh()`.
 | `PATCH /categories/reorder`                      | persist manual drawer order `{ ids }` (declared before `:id` so "reorder" isn't read as an id)                       |
 | `DELETE /categories/:id`                         | delete (custom + empty only)                                                                                         |
 | `GET /chat` / `POST /chat`                       | list conversations / start one (`{ mode? }` — `classic`/`agentic`, fixed per conversation)                          |
-| `GET /chat/:id` / `DELETE /chat/:id`             | conversation with messages + pins (+ `mode`) / delete it                                                            |
+| `GET /chat/:id` / `DELETE /chat/:id`             | conversation with messages + pins + attachments (+ `mode`) / delete it                                              |
 | `PATCH /chat/:id`                                | switch the conversation's chat mode `{ mode }`                                                                       |
 | `PUT /chat/:id/pins`                             | replace pinned-document list `{ docIds }`                                                                            |
+| `POST /chat/:id/attachments`                     | multipart: drop a file into the conversation as chat-only context (extracted text; not filed; images 400, no-text 422) |
+| `DELETE /chat/:id/attachments/:attId`            | remove a chat attachment; 204                                                                                        |
 | `POST /chat/:id/messages`                        | send a user message; SSE stream of `token` / `tool` / `done` / `error` events                                        |
 | `GET /projects`                                  | all projects with computed money totals                                                                              |
 | `POST /projects`                                 | create a project `{ name, description? }`                                                                            |
 | `GET /projects/:id`                              | project detail with line items + totals                                                                              |
-| `PATCH /projects/:id`                            | rename / re-describe / archive (`status`)                                                                            |
+| `PATCH /projects/:id`                            | rename / re-describe / archive (`status`) / set-as-current (`isDefault`)                                             |
 | `DELETE /projects/:id`                           | delete project + its line items                                                                                      |
 | `POST /projects/:id/items`                       | add a line item                                                                                                      |
 | `PATCH /projects/:id/items/:itemId`              | partial-update a line item (`documentId: null` clears the link)                                                      |

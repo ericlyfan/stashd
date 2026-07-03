@@ -2,6 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { NavLink, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { BookOpen, ChevronDown, Inbox, Library, Pin, Plus, Search, Sparkles, TrendingUp } from "lucide-react";
 import { useStore } from "../store";
+import Clock from "./Clock";
+import StatusBar from "./StatusBar";
+import { useChatDock } from "./ChatDockContext";
 import { batchUpdateDocuments, createCategory, reorderCategories, updateCategory } from "../api";
 import { categoryIcon } from "../lib/categoryMeta";
 import type { CategoryWithCount } from "../api";
@@ -27,6 +30,7 @@ function sortDrawers(cats: CategoryWithCount[]): CategoryWithCount[] {
 
 export default function Sidebar() {
   const { categories, setCategories, docs, projects, queue, refresh, notify } = useStore();
+  const { close: closeChatDock } = useChatDock();
   const navigate = useNavigate();
   const location = useLocation();
   const [params] = useSearchParams();
@@ -62,6 +66,10 @@ export default function Sidebar() {
   const inboxCount = queue.length + docs.filter((d) => d.status === "pending").length;
   const activeProjects = projects.filter((p) => p.status === "active").length;
   const onLedgers = location.pathname.startsWith("/ledger");
+  // A single "current" project deep-links the Ledgers entry straight to it;
+  // with none or several defaults it falls back to the project index.
+  const defaultProjects = projects.filter((p) => p.isDefault);
+  const ledgersTarget = defaultProjects.length === 1 ? `/ledger/${defaultProjects[0].id}` : "/ledgers";
 
   // Keep the box in sync when arriving at /search via URL, clear elsewhere.
   useEffect(() => {
@@ -177,7 +185,7 @@ export default function Sidebar() {
           All documents
           <span className="count">{docs.length}</span>
         </NavLink>
-        <NavLink to="/ledgers" className={({ isActive }) => `nav-item${isActive || onLedgers ? " active" : ""}`}>
+        <NavLink to={ledgersTarget} className={({ isActive }) => `nav-item${isActive || onLedgers ? " active" : ""}`}>
           <BookOpen size={15} strokeWidth={1.8} />
           Ledgers
           {activeProjects > 0 && <span className="count">{activeProjects}</span>}
@@ -186,7 +194,11 @@ export default function Sidebar() {
           <TrendingUp size={15} strokeWidth={1.8} />
           Portfolio
         </NavLink>
-        <NavLink to="/chat" className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}>
+        <NavLink
+          to="/chat"
+          className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}
+          onClick={() => closeChatDock()}
+        >
           <Sparkles size={15} strokeWidth={1.8} />
           Ask the stash
         </NavLink>
@@ -299,12 +311,8 @@ export default function Sidebar() {
         )}
       </div>
 
-      <div className="side-foot">
-        <span className="dot" />
-        local-first
-        <br />
-        every page stays on this machine
-      </div>
+      <Clock />
+      <StatusBar />
     </aside>
   );
 }

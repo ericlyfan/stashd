@@ -1,9 +1,22 @@
 import { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import { Conversation, ChatSSEEvent, ChatMode } from '@stashd/shared';
+import multer from 'multer';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { mkdtemp, rm, writeFile } from 'fs/promises';
+import {
+  Conversation,
+  ChatSSEEvent,
+  ChatMode,
+  ChatAttachment,
+  extensionOf,
+  isSupportedFilename,
+  mimeFromExtension,
+} from '@stashd/shared';
 import { StoreService } from '../services/StoreService';
 import { ChatService } from '../services/ChatService';
 import { AgenticChatService } from '../services/AgenticChatService';
+import { extractText } from '../services/textExtraction';
 
 interface Services {
   store: StoreService;
@@ -11,9 +24,22 @@ interface Services {
   agenticChatService: AgenticChatService;
 }
 
+const MAX_SIZE_BYTES = 50 * 1024 * 1024;
+const ATTACHMENT_TEXT_CAP = 20000;
+// Chat-only context is read as text; image types yield no text, so they're
+// rejected rather than attached as empty context.
+const IMAGE_EXTS = new Set(['jpg', 'jpeg', 'png', 'heic', 'heif', 'webp']);
+
 export function createChatRoutes(services: Services): Router {
   const { store, chatService, agenticChatService } = services;
   const router = Router();
+
+  const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: MAX_SIZE_BYTES },
+    // Validate by extension, not the browser MIME (unreliable for Office/email).
+    fileFilter: (_req, file, cb) => cb(null, isSupportedFilename(file.originalname)),
+  });
 
   // GET /api/chat — all conversations, most recent first
   router.get('/', (_req, res) => {
@@ -73,6 +99,59 @@ export function createChatRoutes(services: Services): Router {
     const valid = docIds.filter(id => store.getDocument(id));
     store.setPins(req.params.id, valid);
     res.json({ pinnedDocIds: valid });
+  });
+
+  // POST /api/chat/:id/attachments — drop a file into the conversation as
+  // throwaway context: extract its text and store it, but never file it in the
+  // stash. Text-bearing types only (images yield no text).
+  router.post('/:id/attachments', upload.single('file'), async (req, res) => {
+    if (!store.getConversation(req.params.id)) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+    const file = req.file;
+    if (!file) return res.status(400).json({ error: 'A file is required' });
+    if (!isSupportedFilename(file.originalname)) {
+      return res.status(400).json({ error: 'Unsupported file type' });
+    }
+    if (IMAGE_EXTS.has(extensionOf(file.originalname))) {
+      return res.status(400).json({ error: 'Images can’t be attached to chat — they carry no text to read.' });
+    }
+
+    // extractText dispatches by the path's extension, so write a temp file that
+    // preserves the original name, extract, then clean up.
+    let dir: string | undefined;
+    let text = '';
+    try {
+      dir = await mkdtemp(join(tmpdir(), 'stashd-chat-'));
+      const tempPath = join(dir, file.originalname);
+      await writeFile(tempPath, file.buffer);
+      text = (await extractText(tempPath, mimeFromExtension(file.originalname)))?.slice(0, ATTACHMENT_TEXT_CAP) ?? '';
+    } finally {
+      if (dir) await rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+
+    if (!text.trim()) {
+      return res.status(422).json({ error: 'No readable text could be extracted from this file.' });
+    }
+
+    const attachment: ChatAttachment = {
+      id: uuidv4(),
+      conversationId: req.params.id,
+      name: file.originalname,
+      mime: mimeFromExtension(file.originalname),
+      text,
+      createdAt: new Date().toISOString(),
+    };
+    store.addChatAttachment(attachment);
+    res.status(201).json(attachment);
+  });
+
+  // DELETE /api/chat/:id/attachments/:attId
+  router.delete('/:id/attachments/:attId', (req, res) => {
+    if (!store.removeChatAttachment(req.params.attId)) {
+      return res.status(404).json({ error: 'Attachment not found' });
+    }
+    res.status(204).end();
   });
 
   // POST /api/chat/:id/messages — send a user message, stream the answer (SSE)

@@ -70,6 +70,7 @@ export function createProjectRoutes(services: Services): Router {
       name: name.trim(),
       description: cleanText(description),
       status: 'active',
+      isDefault: false,
       createdAt: now,
       updatedAt: now,
     };
@@ -96,10 +97,11 @@ export function createProjectRoutes(services: Services): Router {
     const project = store.getProject(req.params.id);
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
-    const { name, description, status } = req.body as {
+    const { name, description, status, isDefault } = req.body as {
       name?: string;
       description?: string;
       status?: string;
+      isDefault?: boolean;
     };
     if (name !== undefined && (typeof name !== 'string' || !name.trim())) {
       return res.status(400).json({ error: 'A project name can’t be blank' });
@@ -112,6 +114,7 @@ export function createProjectRoutes(services: Services): Router {
       ...(name !== undefined && { name: name.trim() }),
       ...(description !== undefined && { description: cleanText(description) }),
       ...(status !== undefined && { status }),
+      ...(isDefault !== undefined && { isDefault: !!isDefault }),
       updatedAt: new Date().toISOString(),
     });
     res.json({ ...updated!, totals: store.getProjectDetail(project.id)!.totals });

@@ -32,22 +32,27 @@ export function GlobalDropCurtain() {
     function onOver(e: DragEvent) {
       if (hasFiles(e)) e.preventDefault();
     }
+    // Capture phase so the curtain always resets even when a deeper handler
+    // (the chat drop zone) calls stopPropagation. Drops onto the chat are its
+    // own concern (attach as chat-only context) — reset the visual and bow out.
     function onDrop(e: DragEvent) {
       if (!hasFiles(e)) return;
-      e.preventDefault();
       depth.current = 0;
       setDragging(false);
+      const target = e.target as HTMLElement | null;
+      if (target?.closest('.chat-layout')) return;
+      e.preventDefault();
       if (e.dataTransfer?.files.length) addFiles(e.dataTransfer.files);
     }
     window.addEventListener('dragenter', onEnter);
     window.addEventListener('dragleave', onLeave);
     window.addEventListener('dragover', onOver);
-    window.addEventListener('drop', onDrop);
+    window.addEventListener('drop', onDrop, true);
     return () => {
       window.removeEventListener('dragenter', onEnter);
       window.removeEventListener('dragleave', onLeave);
       window.removeEventListener('dragover', onOver);
-      window.removeEventListener('drop', onDrop);
+      window.removeEventListener('drop', onDrop, true);
     };
   }, [addFiles]);
 

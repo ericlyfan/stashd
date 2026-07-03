@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { BookOpen, Plus } from 'lucide-react';
+import { BookOpen, Plus, Star } from 'lucide-react';
 import { useStore } from '../store';
 import { createProject } from '../api';
 import ProjectDialog from '../components/ProjectDialog';
@@ -36,6 +36,12 @@ export default function LedgersPage() {
       <Link key={p.id} to={`/ledger/${p.id}`} className={`ledger-card${p.status === 'archived' ? ' archived' : ''}`}>
         <div className="lc-head">
           <span className="lc-name">{p.name}</span>
+          {p.isDefault && (
+            <span className="lc-current" title="Your current project">
+              <Star size={10} fill="currentColor" />
+              Current
+            </span>
+          )}
           {p.status === 'archived' && <span className="lc-archived">Archived</span>}
         </div>
         {p.description && <p className="lc-desc">{p.description}</p>}

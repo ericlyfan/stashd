@@ -9,6 +9,7 @@ import {
   SearchHit,
   Conversation,
   ConversationDetail,
+  ChatAttachment,
   ChatMessage,
   ChatMode,
   Project,
@@ -109,6 +110,7 @@ interface ProjectRow {
   name: string;
   description: string | null;
   status: string;
+  is_default: number;
   created_at: string;
   updated_at: string;
 }
@@ -139,6 +141,7 @@ function rowToProject(row: ProjectRow): Project {
     name: row.name,
     description: row.description ?? undefined,
     status: row.status as ProjectStatus,
+    isDefault: !!row.is_default,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -242,6 +245,7 @@ export class StoreService {
     this.createSchema();
     this.migrateCategoryColumns();
     this.migrateConversationColumns();
+    this.migrateProjectColumns();
     this.migrateFromManifest();
     if ((this.db.prepare('SELECT COUNT(*) AS n FROM categories').get() as { n: number }).n === 0) {
       for (const cat of DEFAULT_CATEGORIES) this.addCategory(cat);
@@ -267,6 +271,14 @@ export class StoreService {
     const cols = (this.db.prepare('PRAGMA table_info(conversations)').all() as { name: string }[]).map(c => c.name);
     if (!cols.includes('mode')) {
       this.db.exec("ALTER TABLE conversations ADD COLUMN mode TEXT NOT NULL DEFAULT 'classic'");
+    }
+  }
+
+  // Adds the "current project" flag to databases created before the feature.
+  private migrateProjectColumns(): void {
+    const cols = (this.db.prepare('PRAGMA table_info(projects)').all() as { name: string }[]).map(c => c.name);
+    if (!cols.includes('is_default')) {
+      this.db.exec('ALTER TABLE projects ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0');
     }
   }
 
@@ -366,6 +378,18 @@ export class StoreService {
         PRIMARY KEY (conversation_id, doc_id)
       );
 
+      -- Files dropped straight into a conversation as throwaway context: text
+      -- is extracted and read by the model, but nothing is filed in the stash.
+      CREATE TABLE IF NOT EXISTS chat_attachments (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        mime TEXT NOT NULL,
+        text TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_chat_attachments_conversation ON chat_attachments(conversation_id);
+
       -- Ledgers: cost-tracking projects and their line items. Largely
       -- independent of documents; document_id is a nullable, advisory link.
       CREATE TABLE IF NOT EXISTS projects (
@@ -373,6 +397,7 @@ export class StoreService {
         name TEXT NOT NULL,
         description TEXT,
         status TEXT NOT NULL DEFAULT 'active',
+        is_default INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -767,6 +792,7 @@ export class StoreService {
       updatedAt: row.updated_at,
       messages: this.getMessages(id),
       pinnedDocIds: this.getPins(id),
+      attachments: this.getChatAttachments(id),
     };
   }
 
@@ -793,9 +819,35 @@ export class StoreService {
     const run = this.db.transaction(() => {
       this.db.prepare('DELETE FROM messages WHERE conversation_id = ?').run(id);
       this.db.prepare('DELETE FROM conversation_pins WHERE conversation_id = ?').run(id);
+      this.db.prepare('DELETE FROM chat_attachments WHERE conversation_id = ?').run(id);
       return this.db.prepare('DELETE FROM conversations WHERE id = ?').run(id).changes > 0;
     });
     return run();
+  }
+
+  // Conversation-scoped chat attachments (throwaway context, never filed).
+  getChatAttachments(conversationId: string): ChatAttachment[] {
+    const rows = this.db
+      .prepare('SELECT id, conversation_id, name, mime, text, created_at FROM chat_attachments WHERE conversation_id = ? ORDER BY rowid')
+      .all(conversationId) as { id: string; conversation_id: string; name: string; mime: string; text: string; created_at: string }[];
+    return rows.map(r => ({
+      id: r.id,
+      conversationId: r.conversation_id,
+      name: r.name,
+      mime: r.mime,
+      text: r.text,
+      createdAt: r.created_at,
+    }));
+  }
+
+  addChatAttachment(att: ChatAttachment): void {
+    this.db
+      .prepare('INSERT INTO chat_attachments (id, conversation_id, name, mime, text, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(att.id, att.conversationId, att.name, att.mime, att.text, att.createdAt);
+  }
+
+  removeChatAttachment(id: string): boolean {
+    return this.db.prepare('DELETE FROM chat_attachments WHERE id = ?').run(id).changes > 0;
   }
 
   getMessages(conversationId: string): ChatMessage[] {
@@ -867,22 +919,22 @@ export class StoreService {
   addProject(project: Project): void {
     this.db
       .prepare(`
-        INSERT INTO projects (id, name, description, status, created_at, updated_at)
-        VALUES (@id, @name, @description, @status, @createdAt, @updatedAt)
+        INSERT INTO projects (id, name, description, status, is_default, created_at, updated_at)
+        VALUES (@id, @name, @description, @status, @isDefault, @createdAt, @updatedAt)
       `)
-      .run({ ...project, description: project.description ?? null });
+      .run({ ...project, description: project.description ?? null, isDefault: project.isDefault ? 1 : 0 });
   }
 
   updateProject(
     id: string,
-    updates: Partial<Pick<Project, 'name' | 'description' | 'status' | 'updatedAt'>>,
+    updates: Partial<Pick<Project, 'name' | 'description' | 'status' | 'isDefault' | 'updatedAt'>>,
   ): Project | undefined {
     const existing = this.getProject(id);
     if (!existing) return undefined;
     const merged = { ...existing, ...updates };
     this.db
-      .prepare('UPDATE projects SET name = ?, description = ?, status = ?, updated_at = ? WHERE id = ?')
-      .run(merged.name, merged.description ?? null, merged.status, merged.updatedAt, id);
+      .prepare('UPDATE projects SET name = ?, description = ?, status = ?, is_default = ?, updated_at = ? WHERE id = ?')
+      .run(merged.name, merged.description ?? null, merged.status, merged.isDefault ? 1 : 0, merged.updatedAt, id);
     return merged;
   }
 

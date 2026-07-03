@@ -51,6 +51,9 @@ export async function createApp(dataDir: string, overrides: AppOverrides = {}): 
   app.use(cors());
   app.use(express.json());
 
+  // Cheap liveness check for the sidebar status bar (client heartbeat).
+  app.get('/api/health', (_req, res) => res.json({ ok: true }));
+
   app.use('/api/documents', createDocumentRoutes({ store, fileService, classificationService, embeddingService }));
   app.use('/api/categories', createCategoryRoutes({ store }));
   app.use('/api/chat', createChatRoutes({ store, chatService, agenticChatService }));

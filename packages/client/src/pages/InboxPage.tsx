@@ -2,11 +2,9 @@ import { Link } from 'react-router-dom';
 import { ArchiveX, Flag } from 'lucide-react';
 import { useStore } from '../store';
 import { DropTray } from '../components/DropZone';
-import UploadTray from '../components/UploadTray';
 import { Ledger } from '../components/Ledger';
 import EmptyState from '../components/EmptyState';
 import { categoryIcon } from '../lib/categoryMeta';
-import { formatAmount } from '../lib/format';
 
 export default function InboxPage() {
   const { docs, categories, loading } = useStore();
@@ -15,7 +13,6 @@ export default function InboxPage() {
   const recent = [...docs]
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
     .slice(0, 6);
-  const totalAmount = docs.reduce((sum, d) => sum + (d.amount ?? 0), 0);
   const usedCategories = categories.filter(c => c.documentCount > 0);
 
   const today = new Date().toLocaleDateString(undefined, {
@@ -41,10 +38,8 @@ export default function InboxPage() {
         <DropTray />
       </div>
 
-      <UploadTray />
-
       {!loading && (
-        <div className="stats rise rise-2">
+        <div className="stats rise rise-2" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
           <div className="stat">
             <div className="num">{docs.length}</div>
             <div className="lbl">Documents filed</div>
@@ -56,10 +51,6 @@ export default function InboxPage() {
           <div className="stat">
             <div className="num">{flagged.length}</div>
             <div className="lbl">Flagged for review</div>
-          </div>
-          <div className="stat">
-            <div className="num">{totalAmount > 0 ? formatAmount(totalAmount) : '—'}</div>
-            <div className="lbl">Amounts tracked</div>
           </div>
         </div>
       )}

@@ -4,7 +4,10 @@ import { StoreProvider } from './store';
 import Sidebar from './components/Sidebar';
 import { GlobalDropCurtain } from './components/DropZone';
 import ReviewSheet from './components/ReviewSheet';
+import UploadTray from './components/UploadTray';
 import Toasts from './components/Toasts';
+import { ChatDockProvider } from './components/ChatDockContext';
+import { ChatDock, ChatLauncher } from './components/ChatDock';
 import InboxPage from './pages/InboxPage';
 import AllDocsPage from './pages/AllDocsPage';
 import CategoryPage from './pages/CategoryPage';
@@ -26,11 +29,12 @@ function ScrollReset() {
 export default function App() {
   return (
     <StoreProvider>
-      <div className="shell">
-        <Sidebar />
-        <main className="main">
-          <ScrollReset />
-          <Routes>
+      <ChatDockProvider>
+        <div className="shell">
+          <Sidebar />
+          <main className="main">
+            <ScrollReset />
+            <Routes>
             <Route path="/" element={<InboxPage />} />
             <Route path="/all" element={<AllDocsPage />} />
             <Route path="/category/:id" element={<CategoryPage />} />
@@ -42,12 +46,16 @@ export default function App() {
             <Route path="/ledger/:id" element={<LedgerPage />} />
             <Route path="/portfolio" element={<PortfolioPage />} />
             <Route path="*" element={<InboxPage />} />
-          </Routes>
-        </main>
-      </div>
-      <GlobalDropCurtain />
-      <ReviewSheet />
-      <Toasts />
+            </Routes>
+          </main>
+        </div>
+        <GlobalDropCurtain />
+        <ReviewSheet />
+        <UploadTray />
+        <ChatDock />
+        <ChatLauncher />
+        <Toasts />
+      </ChatDockProvider>
     </StoreProvider>
   );
 }

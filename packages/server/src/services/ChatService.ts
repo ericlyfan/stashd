@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
-import { CategoryId, ChatMessage, ChatSSEEvent, Citation, Document, LineItem, ToolCallRecord } from '@stashd/shared';
+import { CategoryId, ChatAttachment, ChatMessage, ChatSSEEvent, Citation, Document, LineItem, Project, ToolCallRecord } from '@stashd/shared';
 import { StoreService } from './StoreService';
 import { EmbeddingService } from './EmbeddingService';
 import { buildCustomCategory, slugifyCategory } from './categoryStyle';
@@ -101,10 +101,66 @@ const TOOLS = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'add_line_item',
+      description:
+        'Record a cost against a project ledger (a new expense line). Only call when the user explicitly asks to add/record a cost, payment, or expense. Resolve the project by id or name; if it does not exist yet, create it first with create_project.',
+      parameters: {
+        type: 'object',
+        properties: {
+          project: { type: 'string', description: 'The target project id or name' },
+          description: { type: 'string', description: 'What the cost was for (a milestone or description)' },
+          category: { type: 'string', description: 'Cost category, e.g. Materials, Labour' },
+          vendor: { type: 'string', description: 'Who was paid (vendor/contractor)' },
+          amount_paid: { type: 'number', description: 'Pre-tax amount paid' },
+          tax_amount: { type: 'number', description: 'GST/HST portion' },
+          total_paid: { type: 'number', description: 'Total paid; if omitted it is computed from amount_paid + tax_amount' },
+          amount_requested: { type: 'number', description: 'Amount invoiced/requested, if different from paid' },
+          date_paid: { type: 'string', description: 'ISO date the cost was paid (YYYY-MM-DD)' },
+          invoice_number: { type: 'string' },
+          quantity: { type: 'number' },
+          status: { type: 'string', description: 'Free-text status, e.g. paid, pending' },
+          notes: { type: 'string' },
+          document_id: { type: 'string', description: 'Optional stash document id to link as supporting evidence' },
+        },
+        required: ['project', 'description'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'create_project',
+      description:
+        'Create a new project ledger. Only call when the user explicitly asks to start a new project/ledger, or when a requested cost belongs to a project that does not exist yet.',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'The project name' },
+          description: { type: 'string', description: 'Optional project description' },
+        },
+        required: ['name'],
+      },
+    },
+  },
 ];
 
 function formatMoney(amount: number): string {
   return amount.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+}
+
+function cleanText(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function numArg(value: unknown): number | undefined {
+  if (value === null || value === undefined || value === '') return undefined;
+  const n = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(n) ? n : undefined;
 }
 
 function docCard(doc: Document): Record<string, unknown> {
@@ -157,7 +213,12 @@ export class ChatService {
 
     const toolCalls: ToolCallRecord[] = [];
     try {
-      const messages = await this.buildMessages(conversation.messages, conversation.pinnedDocIds, userText);
+      const messages = await this.buildMessages(
+        conversation.messages,
+        conversation.pinnedDocIds,
+        conversation.attachments,
+        userText,
+      );
       const content = await this.runToolLoop(messages, toolCalls, send);
       const assistantMsg: ChatMessage = {
         id: uuidv4(),
@@ -179,6 +240,7 @@ export class ChatService {
   private async buildMessages(
     history: ChatMessage[],
     pinnedDocIds: string[],
+    attachments: ChatAttachment[],
     userText: string,
   ): Promise<OllamaChatMessage[]> {
     const categories = this.store.getCategories();
@@ -208,6 +270,7 @@ Rules:
 - Ground every claim about a document in its actual content (the excerpts below, pinned documents, or read_doc results). If you cannot find something, say so plainly.
 - Cite documents inline using the exact form [doc:<id>] right after the claim it supports, e.g. "the rent is $2,400 [doc:abc-123]". Always cite when you state facts from a document.
 - For money or project questions, use list_projects / read_project to get the figures rather than guessing. Refer to projects by name in your answer.
+- You can also write to the ledgers: add_line_item records a cost against a project, and create_project starts a new ledger. Only do this when the user explicitly asks to add/record a cost or create a project. If they ask to log a cost against a project that doesn't exist yet, create it first, then add the line. After writing, confirm exactly what you added.
 - Use search_docs / read_doc freely to investigate. Only call update_doc when the user explicitly asks for a change.
 - Answer in plain conversational prose. Keep it concise.
 
@@ -227,6 +290,15 @@ ${projectList}`,
         return `--- Pinned document [doc:${doc.id}] "${doc.originalName}" (category: ${doc.category}${doc.vendor ? `, vendor: ${doc.vendor}` : ''}${doc.dateExtracted ? `, date: ${doc.dateExtracted}` : ''}) ---\n${text}`;
       });
       sections.push(`The user pinned these documents to this conversation — they are primary context:\n\n${blocks.join('\n\n')}`);
+    }
+
+    if (attachments.length > 0) {
+      const blocks = attachments.map(
+        a => `--- Attached file "${a.name}" (${a.mime}) ---\n${a.text.slice(0, PINNED_TEXT_CAP)}`,
+      );
+      sections.push(
+        `The user attached these files to this conversation as context only — they are NOT in the stash and have no [doc:] id to cite, but treat them as primary source material for this question:\n\n${blocks.join('\n\n')}`,
+      );
     }
 
     // Dynamic RAG for everything that isn't pinned. Degrades to nothing if the
@@ -449,12 +521,93 @@ ${projectList}`,
             record: { tool: name, args, summary: `Read the “${detail.name}” ledger — ${detail.items.length} line item${detail.items.length === 1 ? '' : 's'}` },
           };
         }
+        case 'create_project': {
+          const projectName = cleanText(args.name);
+          if (!projectName) return this.toolError(name, args, 'A project name is required');
+          const existing = this.store.listProjects().find(p => p.name.toLowerCase() === projectName.toLowerCase());
+          if (existing) {
+            return {
+              result: JSON.stringify({ ok: true, project: { id: existing.id, name: existing.name }, note: 'A project with this name already exists' }),
+              record: { tool: name, args, summary: `“${existing.name}” ledger already exists` },
+            };
+          }
+          const now = new Date().toISOString();
+          const project: Project = {
+            id: uuidv4(),
+            name: projectName,
+            description: cleanText(args.description),
+            status: 'active',
+            isDefault: false,
+            createdAt: now,
+            updatedAt: now,
+          };
+          this.store.addProject(project);
+          return {
+            result: JSON.stringify({ ok: true, project: { id: project.id, name: project.name } }),
+            record: { tool: name, args, summary: `Created the “${projectName}” ledger` },
+          };
+        }
+        case 'add_line_item': {
+          const key = String(args.project ?? '').trim();
+          const projectId = this.resolveProjectId(key);
+          if (!projectId) return this.toolError(name, args, `Project not found: “${key}”. Create it first with create_project.`);
+          const description = cleanText(args.description);
+          if (!description) return this.toolError(name, args, 'A description of the cost is required');
+
+          const amountPaid = numArg(args.amount_paid);
+          const taxAmount = numArg(args.tax_amount);
+          // Mirror the line-item dialog: default total to paid + tax when not given.
+          let totalPaid = numArg(args.total_paid);
+          if (totalPaid === undefined && amountPaid !== undefined) totalPaid = amountPaid + (taxAmount ?? 0);
+
+          const docId = typeof args.document_id === 'string' && this.store.getDocument(args.document_id) ? args.document_id : undefined;
+          const now = new Date().toISOString();
+          const item: LineItem = {
+            id: uuidv4(),
+            projectId,
+            description,
+            category: cleanText(args.category),
+            vendor: cleanText(args.vendor),
+            quantity: numArg(args.quantity),
+            datePaid: cleanText(args.date_paid),
+            invoiceNumber: cleanText(args.invoice_number),
+            amountRequested: numArg(args.amount_requested),
+            amountPaid,
+            taxAmount,
+            totalPaid,
+            status: cleanText(args.status),
+            notes: cleanText(args.notes),
+            documentId: docId,
+            createdAt: now,
+            updatedAt: now,
+          };
+          this.store.addLineItem(item);
+          this.store.updateProject(projectId, { updatedAt: now });
+          const projectName = this.store.getProject(projectId)?.name ?? 'the ledger';
+          const moneyPart = totalPaid !== undefined ? ` — ${formatMoney(totalPaid)}` : '';
+          return {
+            result: JSON.stringify({ ok: true, projectId, project: projectName, item: { id: item.id, description, vendor: item.vendor, totalPaid } }),
+            record: { tool: name, args, summary: `Added “${description}”${item.vendor ? ` (${item.vendor})` : ''}${moneyPart} to ${projectName}` },
+          };
+        }
         default:
           return this.toolError(name, args, `Unknown tool: ${name}`);
       }
     } catch (err) {
       return this.toolError(name, args, err instanceof Error ? err.message : 'Tool failed');
     }
+  }
+
+  // The model usually passes a project's name (or a partial one) rather than
+  // its id, so resolve id → exact name → partial name, like read_project does.
+  private resolveProjectId(key: string): string | undefined {
+    if (this.store.getProject(key)) return key;
+    const lower = key.toLowerCase();
+    const projects = this.store.listProjects();
+    const match =
+      projects.find(p => p.name.toLowerCase() === lower) ??
+      projects.find(p => p.name.toLowerCase().includes(lower));
+    return match?.id;
   }
 
   private toolError(tool: string, args: Record<string, unknown>, error: string): { result: string; record: ToolCallRecord } {

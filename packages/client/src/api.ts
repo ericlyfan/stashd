@@ -1,5 +1,6 @@
 import {
   Category,
+  ChatAttachment,
   ChatMode,
   ChatSSEEvent,
   Conversation,
@@ -39,6 +40,17 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
+}
+
+// Lightweight liveness probe for the sidebar status bar. Resolves true only on
+// a clean 200 from the local server; any error (server down, network) → false.
+export async function checkHealth(): Promise<boolean> {
+  try {
+    const res = await fetch(`${BASE}/health`, { cache: 'no-store' });
+    return res.ok;
+  } catch {
+    return false;
+  }
 }
 
 export function listDocuments(search?: string, category?: string): Promise<SearchHit[]> {
@@ -207,6 +219,18 @@ export function setConversationPins(id: string, docIds: string[]): Promise<{ pin
   });
 }
 
+// Drop a file into a conversation as throwaway context (extracted text only,
+// never filed into the stash).
+export function addChatAttachment(conversationId: string, file: File): Promise<ChatAttachment> {
+  const form = new FormData();
+  form.append('file', file);
+  return req<ChatAttachment>(`/chat/${conversationId}/attachments`, { method: 'POST', body: form });
+}
+
+export function removeChatAttachment(conversationId: string, attachmentId: string): Promise<void> {
+  return req<void>(`/chat/${conversationId}/attachments/${attachmentId}`, { method: 'DELETE' });
+}
+
 /**
  * Send a message and stream the assistant's answer. EventSource can't POST,
  * so this reads the SSE body off a fetch stream. Resolves once the stream
@@ -269,7 +293,7 @@ export function getProject(id: string): Promise<ProjectDetail> {
 
 export function updateProject(
   id: string,
-  updates: { name?: string; description?: string; status?: 'active' | 'archived' },
+  updates: { name?: string; description?: string; status?: 'active' | 'archived'; isDefault?: boolean },
 ): Promise<ProjectSummary> {
   return req<ProjectSummary>(`/projects/${id}`, {
     method: 'PATCH',
