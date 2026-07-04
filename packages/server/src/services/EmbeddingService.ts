@@ -94,13 +94,16 @@ export class EmbeddingService {
   indexDocument(doc: Document): Promise<void> {
     const task = this.queue.then(async () => {
       if (!this.ready) return;
-      const body = doc.extractedText?.trim() || [doc.summary, doc.vendor, doc.tags.join(', ')].filter(Boolean).join('\n');
+      const current = this.store.getDocument(doc.id);
+      if (!current) return;
+      const body = current.extractedText?.trim() || [current.summary, current.vendor, current.tags.join(', ')].filter(Boolean).join('\n');
       const chunks = chunkText(body);
       if (chunks.length === 0) {
         this.store.deleteDocChunks(doc.id);
         return;
       }
-      const embeddings = await this.embedRaw(chunks.map(c => `title: ${doc.originalName} | text: ${c}`));
+      const embeddings = await this.embedRaw(chunks.map(c => `title: ${current.originalName} | text: ${c}`));
+      if (!this.store.getDocument(doc.id)) return;
       this.store.replaceDocChunks(
         doc.id,
         chunks.map((text, i) => ({ text, embedding: embeddings[i] })),

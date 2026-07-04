@@ -36,9 +36,55 @@ interface Services {
   embeddingService: EmbeddingService;
 }
 
+function isStringArray(v: unknown): v is string[] {
+  return Array.isArray(v) && v.every((item) => typeof item === "string");
+}
+
+function normalizeTags(tags: string[]): string[] {
+  const out: string[] = [];
+  for (const tag of tags) {
+    const trimmed = tag.trim();
+    if (trimmed && !out.includes(trimmed)) out.push(trimmed);
+  }
+  return out;
+}
+
+function isEnoent(err: unknown): boolean {
+  return (err as NodeJS.ErrnoException).code === "ENOENT";
+}
+
 export function createDocumentRoutes(services: Services): Router {
   const { store, fileService, classificationService, embeddingService } = services;
   const router = Router();
+
+  async function addDocumentThenMoveFile(doc: Document, jobId: string): Promise<void> {
+    try {
+      store.addDocument(doc);
+      await fileService.moveJobFileToStorage(jobId, doc.storagePath);
+    } catch (err) {
+      store.removeDocument(doc.id);
+      await fileService.deleteDocument(doc.storagePath).catch((deleteErr: unknown) => {
+        if (!isEnoent(deleteErr)) {
+          console.warn(`Could not clean up file for failed document ${doc.id}:`, (deleteErr as Error).message);
+        }
+      });
+      throw err;
+    }
+  }
+
+  async function deleteDocumentRecordAndFile(doc: Document): Promise<void> {
+    store.removeDocumentAndQueueFileDeletion(doc.id, doc.storagePath);
+    try {
+      await fileService.deleteDocument(doc.storagePath);
+      store.completeDocumentFileDeletion(doc.storagePath);
+    } catch (err: unknown) {
+      if (isEnoent(err)) {
+        store.completeDocumentFileDeletion(doc.storagePath);
+      } else {
+        console.warn(`Queued document file for retry after delete failed (${doc.storagePath}):`, (err as Error).message);
+      }
+    }
+  }
 
   // File one email attachment as its own document: classify it independently
   // (reusing the same model pipeline as a normal upload) and file it flagged
@@ -64,7 +110,7 @@ export function createDocumentRoutes(services: Services): Router {
     }
 
     const id = uuidv4();
-    const storagePath = await fileService.moveToDocuments(jobId, categoryId, id, safeName);
+    const storagePath = fileService.documentStoragePath(categoryId, id, safeName);
     const now = new Date().toISOString();
     const doc: Document = {
       id,
@@ -93,7 +139,7 @@ export function createDocumentRoutes(services: Services): Router {
       createdAt: now,
       updatedAt: now,
     };
-    store.addDocument(doc);
+    await addDocumentThenMoveFile(doc, jobId);
     void embeddingService.indexDocument(doc).catch((err: unknown) => {
       console.warn(`Embedding failed for ${doc.originalName}:`, (err as Error).message);
     });
@@ -286,7 +332,7 @@ export function createDocumentRoutes(services: Services): Router {
     const simHash = simhash64(extractedText);
     const documentPerceptualHash = await perceptualHashFile(tempPath, mimeType);
 
-    const storagePath = await fileService.moveToDocuments(jobId, categoryId, id, originalName);
+    const storagePath = fileService.documentStoragePath(categoryId, id, originalName);
 
     const now = new Date().toISOString();
     const doc: Document = {
@@ -314,7 +360,7 @@ export function createDocumentRoutes(services: Services): Router {
       updatedAt: now,
     };
 
-    store.addDocument(doc);
+    await addDocumentThenMoveFile(doc, jobId);
 
     // Vector-index in the background; filing never waits on the embedder.
     void embeddingService.indexDocument(doc).catch((err: unknown) => {
@@ -354,8 +400,6 @@ export function createDocumentRoutes(services: Services): Router {
       addTags?: string[];
       removeTags?: string[];
     };
-    const isStringArray = (v: unknown): v is string[] =>
-      Array.isArray(v) && v.every((item) => typeof item === "string");
     if (!Array.isArray(ids) || ids.length === 0 || !ids.every((id) => typeof id === "string")) {
       return res.status(400).json({ error: "ids must be a non-empty array of document ids" });
     }
@@ -407,11 +451,7 @@ export function createDocumentRoutes(services: Services): Router {
     for (const id of ids as string[]) {
       const doc = store.getDocument(id);
       if (!doc) continue;
-      await fileService.deleteDocument(doc.storagePath).catch((err: unknown) => {
-        console.warn(`Could not delete file for document ${id}:`, (err as Error).message);
-      });
-      store.removeDocument(id);
-      embeddingService.removeDocument(id);
+      await deleteDocumentRecordAndFile(doc);
       deleted++;
     }
     res.json({ deleted });
@@ -426,18 +466,22 @@ export function createDocumentRoutes(services: Services): Router {
 
   // PATCH /api/documents/:id
   router.patch("/:id", async (req, res) => {
-    const { category, tags, notes, status } = req.body as {
-      category?: string;
-      tags?: string[];
-      notes?: string;
-      status?: string;
-    };
+    const { category, tags, notes, status } = (req.body ?? {}) as Record<string, unknown>;
     if (status !== undefined && status !== "pending" && status !== "filed") {
       return res.status(400).json({ error: "Invalid status" });
     }
+    if (category !== undefined && (typeof category !== "string" || !store.getCategory(category))) {
+      return res.status(400).json({ error: "Unknown category" });
+    }
+    if (tags !== undefined && !isStringArray(tags)) {
+      return res.status(400).json({ error: "tags must be an array of strings" });
+    }
+    if (notes !== undefined && typeof notes !== "string") {
+      return res.status(400).json({ error: "notes must be a string" });
+    }
     const updated = store.updateDocument(req.params.id, {
       ...(category !== undefined && { category: category as CategoryId }),
-      ...(tags !== undefined && { tags }),
+      ...(tags !== undefined && { tags: normalizeTags(tags) }),
       ...(notes !== undefined && { notes }),
       ...(status !== undefined && { status }),
       updatedAt: new Date().toISOString(),
@@ -451,11 +495,7 @@ export function createDocumentRoutes(services: Services): Router {
     const doc = store.getDocument(req.params.id);
     if (!doc) return res.status(404).json({ error: "Document not found" });
 
-    await fileService.deleteDocument(doc.storagePath).catch((err: unknown) => {
-      console.warn(`Could not delete file for document ${req.params.id}:`, (err as Error).message);
-    });
-    store.removeDocument(req.params.id);
-    embeddingService.removeDocument(req.params.id);
+    await deleteDocumentRecordAndFile(doc);
 
     res.status(204).end();
   });

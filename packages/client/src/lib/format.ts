@@ -24,13 +24,28 @@ export function relTime(iso?: string | null): string {
 }
 
 export function formatAmount(amount?: number | null): string {
-  if (amount === undefined || amount === null) return "";
-  return amount.toLocaleString(undefined, {
-    style: "currency",
+  return formatMoney(amount, "USD");
+}
 
-    currency: "USD",
-    minimumFractionDigits: 2,
-  });
+// Format money in a given ISO currency (e.g. "CAD", "USD", "EUR"). Falls back to
+// a plain number if the currency code is unknown/invalid so it never throws.
+export function formatMoney(amount?: number | null, currency = "USD"): string {
+  if (amount === undefined || amount === null) return "";
+  try {
+    return amount.toLocaleString(undefined, {
+      style: "currency",
+      currency,
+      minimumFractionDigits: 2,
+    });
+  } catch {
+    return `${amount.toLocaleString(undefined, { minimumFractionDigits: 2 })} ${currency}`;
+  }
+}
+
+// Money for a dense table cell: an em dash for empty, else formatMoney.
+export function formatMoneyCell(amount?: number | null, currency = "USD"): string {
+  if (amount === undefined || amount === null) return "—";
+  return formatMoney(amount, currency);
 }
 
 // Like formatAmount but renders an em dash for an empty/zero cell — for the

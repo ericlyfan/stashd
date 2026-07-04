@@ -1,18 +1,21 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { Paperclip, Plus, RefreshCw, TrendingUp } from 'lucide-react';
-import { HoldingInput, HoldingWithQuote, PortfolioSnapshot } from '@stashd/shared';
-import { createHolding, deleteHolding, getPortfolio, updateHolding } from '../api';
+import { Link, useNavigate } from 'react-router-dom';
+import { Eye, Paperclip, Plus, RefreshCw, TrendingUp, X } from 'lucide-react';
+import { HoldingInput, HoldingWithQuote, PortfolioSnapshot, WatchlistItemWithQuote } from '@stashd/shared';
+import { addWatchlist, createHolding, deleteHolding, getPortfolio, getWatchlist, removeWatchlist, updateHolding } from '../api';
 import { useStore } from '../store';
 import HoldingDialog from '../components/HoldingDialog';
 import EmptyState from '../components/EmptyState';
-import { formatAmount, formatCell, relTime } from '../lib/format';
+import { formatMoney, formatMoneyCell, relTime } from '../lib/format';
 
-// Signed money, e.g. "+$1,240.00" / "−$310.50" — for gain/loss cells.
-function signedAmount(v?: number): string {
+const CURRENCIES = ['CAD', 'USD', 'EUR', 'GBP', 'AUD', 'JPY'];
+const BASE_KEY = 'stashd.portfolioBase';
+
+// Signed money in a given currency, e.g. "+$1,240.00" / "−C$310.50".
+function signedAmount(v: number | undefined, currency: string): string {
   if (v === undefined || v === null) return '—';
   const sign = v > 0 ? '+' : v < 0 ? '−' : '';
-  return `${sign}${formatAmount(Math.abs(v))}`;
+  return `${sign}${formatMoney(Math.abs(v), currency)}`;
 }
 
 function signedPct(v?: number): string {
@@ -29,29 +32,64 @@ function gainClass(v?: number): string {
 
 export default function PortfolioPage() {
   const { notify } = useStore();
+  const navigate = useNavigate();
   const [snap, setSnap] = useState<PortfolioSnapshot | null>(null);
+  const [watchlist, setWatchlist] = useState<WatchlistItemWithQuote[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
   const [editing, setEditing] = useState<HoldingWithQuote | null>(null);
   const [adding, setAdding] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [watchSymbol, setWatchSymbol] = useState('');
+  // The currency the totals are shown in; per-holding rows stay native.
+  const [base, setBase] = useState(() => localStorage.getItem(BASE_KEY) || 'CAD');
 
   const load = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
     try {
-      setSnap(await getPortfolio());
+      const [s, wl] = await Promise.all([getPortfolio(base), getWatchlist().catch(() => [])]);
+      setSnap(s);
+      setWatchlist(wl);
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Could not load portfolio', 'err');
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [notify]);
+  }, [notify, base]);
+
+  const openStock = (symbol: string) => navigate(`/portfolio/${encodeURIComponent(symbol)}`);
+
+  async function addWatch() {
+    const s = watchSymbol.trim().toUpperCase();
+    if (!s) return;
+    try {
+      await addWatchlist({ symbol: s });
+      setWatchSymbol('');
+      await load();
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Could not add to watchlist', 'err');
+    }
+  }
+
+  async function removeWatch(id: string) {
+    try {
+      await removeWatchlist(id);
+      setWatchlist(w => w.filter(i => i.id !== id));
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Could not remove', 'err');
+    }
+  }
 
   useEffect(() => {
     load();
   }, [load]);
+
+  function changeBase(next: string) {
+    setBase(next);
+    localStorage.setItem(BASE_KEY, next);
+  }
 
   async function save(input: HoldingInput) {
     setBusy(true);
@@ -106,6 +144,14 @@ export default function PortfolioPage() {
           <h1 className="page-title">Stock <em>holdings</em></h1>
           <div style={{ flex: 1 }} />
           {holdings.length > 0 && (
+            <label className="base-picker" title="Currency for the totals and chart">
+              <span>Base</span>
+              <select value={base} onChange={e => changeBase(e.target.value)}>
+                {CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </label>
+          )}
+          {holdings.length > 0 && (
             <button className="btn btn-ghost btn-sm" onClick={() => load(true)} disabled={refreshing} title="Refresh prices">
               <RefreshCw size={13} className={refreshing ? 'spin' : undefined} />
               {refreshing ? 'Pricing…' : 'Refresh'}
@@ -141,20 +187,25 @@ export default function PortfolioPage() {
           {totals && (
             <div className="stats rise rise-1" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
               <div className="stat" style={{ ['--accent' as never]: '#3b82f6' }}>
-                <div className="num">{formatCell(totals.costBasis)}</div>
-                <div className="lbl">Invested</div>
+                <div className="num">{formatMoneyCell(totals.costBasis, base)}</div>
+                <div className="lbl">Book cost</div>
               </div>
               <div className="stat" style={{ ['--accent' as never]: 'var(--wax)' }}>
-                <div className="num" style={{ color: 'var(--wax)' }}>{formatCell(totals.marketValue)}</div>
+                <div className="num">{formatMoneyCell(totals.marketValue, base)}</div>
                 <div className="lbl">Market value</div>
               </div>
-              <div className="stat" style={{ ['--accent' as never]: totals.gain >= 0 ? 'var(--moss)' : '#c0392b' }}>
-                <div className={`num ${gainClass(totals.gain)}`}>{signedAmount(totals.gain)}</div>
-                <div className="lbl">Total gain / loss</div>
+              <div className="stat" style={{ ['--accent' as never]: totals.dayChange >= 0 ? 'var(--moss)' : '#c0392b' }}>
+                <div className={`num ${gainClass(totals.dayChange)}`}>{signedAmount(totals.dayChange, base)}</div>
+                <div className="lbl">Today {totals.dayChange !== 0 && <span className="stat-sub">{signedPct(totals.dayChangePct)}</span>}</div>
               </div>
-              <div className="stat" style={{ ['--accent' as never]: totals.gain >= 0 ? 'var(--moss)' : '#c0392b' }}>
-                <div className={`num ${gainClass(totals.gain)}`}>{signedPct(totals.gainPct)}</div>
-                <div className="lbl">Return</div>
+              <div className="stat" style={{ ['--accent' as never]: totals.totalGain >= 0 ? 'var(--moss)' : '#c0392b' }}>
+                <div className={`num ${gainClass(totals.totalGain)}`}>{signedAmount(totals.totalGain, base)}</div>
+                <div className="lbl">
+                  Total return <span className="stat-sub">{signedPct(totals.totalReturnPct)}</span>
+                  {totals.realizedGain !== 0 && (
+                    <span className="stat-sub"> · {signedAmount(totals.realizedGain, base)} realized</span>
+                  )}
+                </div>
               </div>
             </div>
           )}
@@ -167,27 +218,35 @@ export default function PortfolioPage() {
             </div>
           )}
 
+          {snap && snap.quotesLive && !snap.fxLive && (
+            <div className="portfolio-note rise rise-1">
+              Live exchange rates are unavailable, so amounts in other currencies aren’t converted to
+              {' '}{base} right now. Totals resume converting when the FX source is reachable.
+            </div>
+          )}
+
           <div className="li-table-wrap rise rise-2">
             <table className="li-table">
               <thead>
                 <tr>
                   <th>Symbol</th>
                   <th className="num-col">Shares</th>
-                  <th className="num-col">Buy price</th>
+                  <th className="num-col">Avg cost</th>
                   <th className="num-col">Current</th>
-                  <th className="num-col">Cost basis</th>
+                  <th className="num-col">Book cost</th>
                   <th className="num-col">Market value</th>
-                  <th className="num-col">Gain / loss</th>
-                  <th className="num-col">Return</th>
+                  <th className="num-col">Weight</th>
+                  <th className="num-col">Today</th>
+                  <th className="num-col">Total return</th>
                 </tr>
               </thead>
               <tbody>
                 {holdings.map(h => (
                   <tr
                     key={h.id}
-                    onClick={() => setEditing(h)}
+                    onClick={() => openStock(h.symbol)}
                     tabIndex={0}
-                    onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), setEditing(h))}
+                    onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openStock(h.symbol))}
                   >
                     <td>
                       <div className="h-sym">
@@ -202,35 +261,64 @@ export default function PortfolioPage() {
                           </Link>
                         )}
                         <span className="h-ticker">{h.symbol}</span>
+                        <span className="h-ccy" title={`Priced in ${h.currency}`}>{h.currency}</span>
+                        {h.lotCount > 0 && (
+                          <span className="h-lots" title={`${h.lotCount} transaction${h.lotCount === 1 ? '' : 's'}`}>
+                            {h.lotCount} {h.lotCount === 1 ? 'lot' : 'lots'}
+                          </span>
+                        )}
                         {h.name && <span className="h-name">{h.name}</span>}
                       </div>
                     </td>
-                    <td className="num-col">{h.shares}</td>
-                    <td className="num-col">{formatCell(h.buyPrice)}</td>
+                    <td className="num-col">{+h.shares.toFixed(4)}</td>
+                    <td className="num-col">{formatMoneyCell(h.avgCost, h.currency)}</td>
                     <td className="num-col">
                       {h.currentPrice !== undefined ? (
                         <span className="h-price">
-                          {formatAmount(h.currentPrice)}
+                          {formatMoney(h.currentPrice, h.currency)}
                           {h.priceSource === 'manual' && <span className="h-price-tag" title="Manually entered price">manual</span>}
                         </span>
                       ) : (
                         <span className="li-empty">—</span>
                       )}
                     </td>
-                    <td className="num-col">{formatCell(h.costBasis)}</td>
-                    <td className="num-col">{h.marketValue !== undefined ? formatAmount(h.marketValue) : <span className="li-empty">—</span>}</td>
-                    <td className={`num-col ${gainClass(h.gain)}`}>{h.gain !== undefined ? signedAmount(h.gain) : <span className="li-empty">—</span>}</td>
-                    <td className={`num-col ${gainClass(h.gain)}`}>{h.gainPct !== undefined ? signedPct(h.gainPct) : ''}</td>
+                    <td className="num-col">{formatMoneyCell(h.costBasis, h.currency)}</td>
+                    <td className="num-col">{h.marketValue !== undefined ? formatMoney(h.marketValue, h.currency) : <span className="li-empty">—</span>}</td>
+                    <td className="num-col">{h.weight !== undefined ? `${(h.weight * 100).toFixed(1)}%` : <span className="li-empty">—</span>}</td>
+                    <td className={`num-col ${gainClass(h.dayChange)}`}>
+                      {h.dayChange !== undefined ? (
+                        <>
+                          {signedAmount(h.dayChange, h.currency)}
+                          <span className="h-sub">{signedPct(h.dayChangePct)}</span>
+                        </>
+                      ) : (
+                        <span className="li-empty">—</span>
+                      )}
+                    </td>
+                    <td className={`num-col ${gainClass(h.totalGain)}`}>
+                      {h.totalGain !== undefined ? (
+                        <>
+                          {signedAmount(h.totalGain, h.currency)}
+                          <span className="h-sub">{signedPct(h.totalReturnPct)}</span>
+                        </>
+                      ) : (
+                        <span className="li-empty">—</span>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
               <tfoot>
                 <tr>
-                  <td colSpan={4}>{holdings.length} {holdings.length === 1 ? 'holding' : 'holdings'}</td>
-                  <td className="num-col">{totals ? formatAmount(totals.costBasis) : ''}</td>
-                  <td className="num-col">{totals ? formatAmount(totals.marketValue) : ''}</td>
-                  <td className={`num-col ${gainClass(totals?.gain)}`}>{signedAmount(totals?.gain)}</td>
-                  <td className={`num-col ${gainClass(totals?.gain)}`}>{signedPct(totals?.gainPct)}</td>
+                  <td colSpan={4}>
+                    {holdings.length} {holdings.length === 1 ? 'holding' : 'holdings'}
+                    <span className="tf-base" title="Totals converted to your base currency">· in {base}</span>
+                  </td>
+                  <td className="num-col">{totals ? formatMoney(totals.costBasis, base) : ''}</td>
+                  <td className="num-col">{totals ? formatMoney(totals.marketValue, base) : ''}</td>
+                  <td className="num-col">{totals && totals.marketValue > 0 ? '100%' : ''}</td>
+                  <td className={`num-col ${gainClass(totals?.dayChange)}`}>{signedAmount(totals?.dayChange, base)}</td>
+                  <td className={`num-col ${gainClass(totals?.totalGain)}`}>{signedAmount(totals?.totalGain, base)}</td>
                 </tr>
               </tfoot>
             </table>
@@ -247,12 +335,99 @@ export default function PortfolioPage() {
         </>
       )}
 
+      {/* Watchlist — stocks you're following but don't (necessarily) own. */}
+      <section className="watchlist rise rise-3">
+        <div className="watchlist-head">
+          <div className="page-eyebrow" style={{ margin: 0 }}>
+            <Eye size={12} style={{ verticalAlign: '-1px', marginRight: 7 }} />
+            Watchlist
+          </div>
+          <div className="watchlist-add">
+            <input
+              className="input"
+              value={watchSymbol}
+              placeholder="Add a ticker (e.g. TSLA, SHOP.TO)"
+              style={{ textTransform: 'uppercase' }}
+              onChange={e => setWatchSymbol(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && addWatch()}
+            />
+            <button className="btn btn-sm btn-primary" onClick={addWatch} disabled={!watchSymbol.trim()}>
+              <Plus size={13} /> Watch
+            </button>
+          </div>
+        </div>
+
+        {watchlist.length === 0 ? (
+          <p className="watchlist-empty">
+            Nothing on your watchlist yet. Add a ticker above to follow its price; click it to see its history.
+          </p>
+        ) : (
+          <div className="li-table-wrap">
+            <table className="li-table">
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th className="num-col">Price</th>
+                  <th className="num-col">Today</th>
+                  <th style={{ width: 34 }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {watchlist.map(w => (
+                  <tr
+                    key={w.id}
+                    onClick={() => openStock(w.symbol)}
+                    tabIndex={0}
+                    onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openStock(w.symbol))}
+                  >
+                    <td>
+                      <div className="h-sym">
+                        <span className="h-ticker">{w.symbol}</span>
+                        {w.currency && <span className="h-ccy">{w.currency}</span>}
+                        {w.name && <span className="h-name">{w.name}</span>}
+                      </div>
+                    </td>
+                    <td className="num-col">
+                      {w.currentPrice !== undefined ? formatMoney(w.currentPrice, w.currency ?? 'USD') : <span className="li-empty">—</span>}
+                    </td>
+                    <td className={`num-col ${gainClass(w.dayChange)}`}>
+                      {w.dayChange !== undefined ? (
+                        <>
+                          {signedAmount(w.dayChange, w.currency ?? 'USD')}
+                          <span className="h-sub">{signedPct(w.dayChangePct)}</span>
+                        </>
+                      ) : (
+                        <span className="li-empty">—</span>
+                      )}
+                    </td>
+                    <td className="num-col">
+                      <button
+                        className="watchlist-x"
+                        title="Remove from watchlist"
+                        aria-label="Remove"
+                        onClick={e => {
+                          e.stopPropagation();
+                          removeWatch(w.id);
+                        }}
+                      >
+                        <X size={13} />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
       {(adding || editing) && (
         <HoldingDialog
           holding={editing ?? undefined}
           busy={busy}
           onSave={save}
           onDelete={editing ? remove : undefined}
+          onLotsChanged={() => load()}
           onClose={() => {
             setEditing(null);
             setAdding(false);

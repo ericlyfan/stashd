@@ -22,6 +22,9 @@ import {
   DocumentLink,
   Holding,
   HoldingInput,
+  HoldingLot,
+  HoldingLotInput,
+  WatchlistItem,
 } from '@stashd/shared';
 import {
   hammingHex,
@@ -208,6 +211,50 @@ function rowToHolding(row: HoldingRow): Holding {
   };
 }
 
+interface HoldingLotRow {
+  id: string;
+  holding_id: string;
+  type: string;
+  trade_date: string;
+  shares: number;
+  price: number;
+  fee: number | null;
+  notes: string | null;
+  created_at: string;
+}
+
+function rowToLot(row: HoldingLotRow): HoldingLot {
+  return {
+    id: row.id,
+    holdingId: row.holding_id,
+    type: row.type as HoldingLot['type'],
+    date: row.trade_date,
+    shares: row.shares,
+    price: row.price,
+    fee: row.fee ?? undefined,
+    notes: row.notes ?? undefined,
+    createdAt: row.created_at,
+  };
+}
+
+interface WatchlistRow {
+  id: string;
+  symbol: string;
+  name: string | null;
+  notes: string | null;
+  created_at: string;
+}
+
+function rowToWatchlistItem(row: WatchlistRow): WatchlistItem {
+  return {
+    id: row.id,
+    symbol: row.symbol,
+    name: row.name ?? undefined,
+    notes: row.notes ?? undefined,
+    createdAt: row.created_at,
+  };
+}
+
 function sumTotals(items: LineItem[]): ProjectTotals {
   return items.reduce<ProjectTotals>(
     (acc, it) => ({
@@ -344,6 +391,15 @@ export class StoreService {
       CREATE INDEX IF NOT EXISTS idx_documents_category ON documents(category);
       CREATE INDEX IF NOT EXISTS idx_documents_hash ON documents(content_hash);
 
+      -- Durable file-deletion queue. Document metadata/vector rows are removed
+      -- in SQLite first, then the filesystem unlink is attempted. If unlink
+      -- fails or the process crashes before it runs, this row keeps the orphaned
+      -- path visible and retryable on startup.
+      CREATE TABLE IF NOT EXISTS pending_document_deletions (
+        storage_path TEXT PRIMARY KEY,
+        created_at TEXT NOT NULL
+      );
+
       CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
         original_name, summary, tags, vendor, category, notes, extracted_text,
         content='documents', content_rowid='rowid'
@@ -467,6 +523,34 @@ export class StoreService {
         updated_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_holdings_document ON holdings(document_id);
+
+      -- Dated buy/sell transactions ("lots") for a holding. When a holding has
+      -- lots they are the source of truth for its position + cost basis
+      -- (average-cost accounting); with none, the holding's stored shares/
+      -- buy_price act as a single undated opening lot. Deleted with the holding.
+      CREATE TABLE IF NOT EXISTS holding_lots (
+        id TEXT PRIMARY KEY,
+        holding_id TEXT NOT NULL,
+        type TEXT NOT NULL DEFAULT 'buy',
+        trade_date TEXT NOT NULL,
+        shares REAL NOT NULL DEFAULT 0,
+        price REAL NOT NULL DEFAULT 0,
+        fee REAL,
+        notes TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_holding_lots_holding ON holding_lots(holding_id);
+
+      -- Watchlist: stocks the user is following but doesn't (necessarily) own.
+      -- Priced live like holdings; no positions/cost basis.
+      CREATE TABLE IF NOT EXISTS watchlist (
+        id TEXT PRIMARY KEY,
+        symbol TEXT NOT NULL,
+        name TEXT,
+        notes TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_watchlist_symbol ON watchlist(symbol);
     `);
   }
 
@@ -605,7 +689,12 @@ export class StoreService {
   ): Document | undefined {
     const existing = this.getDocument(id);
     if (!existing) return undefined;
-    const merged = { ...existing, ...updates };
+    const merged = {
+      ...existing,
+      ...updates,
+      category: updates.category !== undefined && this.getCategory(updates.category) ? updates.category : existing.category,
+      tags: updates.tags !== undefined && Array.isArray(updates.tags) ? updates.tags : existing.tags,
+    };
     this.db
       .prepare(`
         UPDATE documents SET
@@ -636,9 +725,46 @@ export class StoreService {
       // harmlessly rather than pointing at a deleted document.
       this.db.prepare('UPDATE line_items SET document_id = NULL WHERE document_id = ?').run(id);
       this.db.prepare('UPDATE holdings SET document_id = NULL WHERE document_id = ?').run(id);
+      this.deleteChunksUnsafe(id);
       return this.db.prepare('DELETE FROM documents WHERE id = ?').run(id).changes > 0;
     });
     return run();
+  }
+
+  removeDocumentAndQueueFileDeletion(id: string, storagePath: string): boolean {
+    const run = this.db.transaction(() => {
+      // Drop any ledger line-item and portfolio-holding links so they dangle
+      // harmlessly rather than pointing at a deleted document.
+      this.db.prepare('UPDATE line_items SET document_id = NULL WHERE document_id = ?').run(id);
+      this.db.prepare('UPDATE holdings SET document_id = NULL WHERE document_id = ?').run(id);
+      this.deleteChunksUnsafe(id);
+      const deleted = this.db.prepare('DELETE FROM documents WHERE id = ?').run(id).changes > 0;
+      if (deleted) this.queueDocumentFileDeletionUnsafe(storagePath);
+      return deleted;
+    });
+    return run();
+  }
+
+  queueDocumentFileDeletion(storagePath: string): void {
+    const run = this.db.transaction(() => this.queueDocumentFileDeletionUnsafe(storagePath));
+    run();
+  }
+
+  listPendingDocumentDeletions(): string[] {
+    const rows = this.db
+      .prepare('SELECT storage_path FROM pending_document_deletions ORDER BY created_at')
+      .all() as { storage_path: string }[];
+    return rows.map(r => r.storage_path);
+  }
+
+  completeDocumentFileDeletion(storagePath: string): void {
+    this.db.prepare('DELETE FROM pending_document_deletions WHERE storage_path = ?').run(storagePath);
+  }
+
+  private queueDocumentFileDeletionUnsafe(storagePath: string): void {
+    this.db
+      .prepare('INSERT OR IGNORE INTO pending_document_deletions (storage_path, created_at) VALUES (?, ?)')
+      .run(storagePath, new Date().toISOString());
   }
 
   // ── Categories ──────────────────────────────────────────────────────────
@@ -778,10 +904,12 @@ export class StoreService {
     return rows.map(r => r.id);
   }
 
-  replaceDocChunks(docId: string, chunks: { text: string; embedding: Float32Array }[]): void {
+  replaceDocChunks(docId: string, chunks: { text: string; embedding: Float32Array }[]): boolean {
     const insertChunk = this.db.prepare('INSERT INTO doc_chunks (doc_id, seq, text) VALUES (?, ?, ?)');
     const insertVec = this.db.prepare('INSERT INTO doc_chunks_vec (rowid, embedding) VALUES (?, ?)');
     const run = this.db.transaction(() => {
+      const exists = this.db.prepare('SELECT 1 FROM documents WHERE id = ?').get(docId);
+      if (!exists) return false;
       this.deleteChunksUnsafe(docId);
       chunks.forEach((chunk, seq) => {
         const rowid = insertChunk.run(docId, seq, chunk.text).lastInsertRowid;
@@ -789,8 +917,9 @@ export class StoreService {
         // number binds as a float and gets rejected.
         insertVec.run(BigInt(rowid), Buffer.from(chunk.embedding.buffer, chunk.embedding.byteOffset, chunk.embedding.byteLength));
       });
+      return true;
     });
-    run();
+    return run();
   }
 
   deleteDocChunks(docId: string): void {
@@ -920,8 +1049,8 @@ export class StoreService {
       .run(att.id, att.conversationId, att.name, att.mime, att.text, att.createdAt);
   }
 
-  removeChatAttachment(id: string): boolean {
-    return this.db.prepare('DELETE FROM chat_attachments WHERE id = ?').run(id).changes > 0;
+  removeChatAttachment(conversationId: string, id: string): boolean {
+    return this.db.prepare('DELETE FROM chat_attachments WHERE conversation_id = ? AND id = ?').run(conversationId, id).changes > 0;
   }
 
   getMessages(conversationId: string): ChatMessage[] {
@@ -1213,6 +1342,115 @@ export class StoreService {
   }
 
   removeHolding(id: string): boolean {
-    return this.db.prepare('DELETE FROM holdings WHERE id = ?').run(id).changes > 0;
+    const run = this.db.transaction(() => {
+      const deleted = this.db.prepare('DELETE FROM holdings WHERE id = ?').run(id).changes > 0;
+      if (deleted) this.db.prepare('DELETE FROM holding_lots WHERE holding_id = ?').run(id);
+      return deleted;
+    });
+    return run();
+  }
+
+  // ── Portfolio lots (dated buy/sell transactions) ──────────────────────────
+
+  listLots(holdingId: string): HoldingLot[] {
+    const rows = this.db
+      .prepare('SELECT * FROM holding_lots WHERE holding_id = ? ORDER BY trade_date, created_at')
+      .all(holdingId) as HoldingLotRow[];
+    return rows.map(rowToLot);
+  }
+
+  // Every lot, grouped by holding id — for the snapshot / performance builders
+  // so they issue one query instead of one per holding.
+  listAllLots(): Map<string, HoldingLot[]> {
+    const rows = this.db
+      .prepare('SELECT * FROM holding_lots ORDER BY trade_date, created_at')
+      .all() as HoldingLotRow[];
+    const byHolding = new Map<string, HoldingLot[]>();
+    for (const row of rows) {
+      const lot = rowToLot(row);
+      const list = byHolding.get(lot.holdingId);
+      if (list) list.push(lot);
+      else byHolding.set(lot.holdingId, [lot]);
+    }
+    return byHolding;
+  }
+
+  getLot(id: string): HoldingLot | undefined {
+    const row = this.db.prepare('SELECT * FROM holding_lots WHERE id = ?').get(id) as HoldingLotRow | undefined;
+    return row ? rowToLot(row) : undefined;
+  }
+
+  addLot(lot: HoldingLot): void {
+    this.db
+      .prepare(`
+        INSERT INTO holding_lots (id, holding_id, type, trade_date, shares, price, fee, notes, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run(
+        lot.id,
+        lot.holdingId,
+        lot.type,
+        lot.date,
+        lot.shares,
+        lot.price,
+        lot.fee ?? null,
+        lot.notes ?? null,
+        lot.createdAt,
+      );
+  }
+
+  updateLot(id: string, updates: HoldingLotInput): HoldingLot | undefined {
+    const existing = this.getLot(id);
+    if (!existing) return undefined;
+    const has = (k: keyof HoldingLotInput) => Object.prototype.hasOwnProperty.call(updates, k);
+    const merged: HoldingLot = {
+      ...existing,
+      type: has('type') ? updates.type ?? existing.type : existing.type,
+      date: has('date') ? updates.date ?? existing.date : existing.date,
+      shares: has('shares') ? updates.shares ?? existing.shares : existing.shares,
+      price: has('price') ? updates.price ?? existing.price : existing.price,
+      fee: has('fee') ? updates.fee : existing.fee,
+      notes: has('notes') ? updates.notes : existing.notes,
+    };
+    this.db
+      .prepare(`
+        UPDATE holding_lots SET type = ?, trade_date = ?, shares = ?, price = ?, fee = ?, notes = ?
+        WHERE id = ?
+      `)
+      .run(merged.type, merged.date, merged.shares, merged.price, merged.fee ?? null, merged.notes ?? null, id);
+    return merged;
+  }
+
+  removeLot(id: string): boolean {
+    return this.db.prepare('DELETE FROM holding_lots WHERE id = ?').run(id).changes > 0;
+  }
+
+  // ── Watchlist ─────────────────────────────────────────────────────────────
+
+  listWatchlist(): WatchlistItem[] {
+    const rows = this.db.prepare('SELECT * FROM watchlist ORDER BY symbol').all() as WatchlistRow[];
+    return rows.map(rowToWatchlistItem);
+  }
+
+  getWatchlistItem(id: string): WatchlistItem | undefined {
+    const row = this.db.prepare('SELECT * FROM watchlist WHERE id = ?').get(id) as WatchlistRow | undefined;
+    return row ? rowToWatchlistItem(row) : undefined;
+  }
+
+  findWatchlistBySymbol(symbol: string): WatchlistItem | undefined {
+    const row = this.db
+      .prepare('SELECT * FROM watchlist WHERE UPPER(symbol) = ? LIMIT 1')
+      .get(symbol.toUpperCase()) as WatchlistRow | undefined;
+    return row ? rowToWatchlistItem(row) : undefined;
+  }
+
+  addWatchlistItem(item: WatchlistItem): void {
+    this.db
+      .prepare('INSERT INTO watchlist (id, symbol, name, notes, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run(item.id, item.symbol, item.name ?? null, item.notes ?? null, item.createdAt);
+  }
+
+  removeWatchlistItem(id: string): boolean {
+    return this.db.prepare('DELETE FROM watchlist WHERE id = ?').run(id).changes > 0;
   }
 }

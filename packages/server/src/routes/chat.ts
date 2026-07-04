@@ -148,7 +148,7 @@ export function createChatRoutes(services: Services): Router {
 
   // DELETE /api/chat/:id/attachments/:attId
   router.delete('/:id/attachments/:attId', (req, res) => {
-    if (!store.removeChatAttachment(req.params.attId)) {
+    if (!store.removeChatAttachment(req.params.id, req.params.attId)) {
       return res.status(404).json({ error: 'Attachment not found' });
     }
     res.status(204).end();

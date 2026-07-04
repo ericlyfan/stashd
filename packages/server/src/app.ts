@@ -13,9 +13,48 @@ import { AgenticChatService } from './services/AgenticChatService';
 import { createChatRoutes } from './routes/chat';
 import { createProjectRoutes } from './routes/projects';
 import { createHoldingRoutes } from './routes/holdings';
+import { createWatchlistRoutes } from './routes/watchlist';
 
 interface AppOverrides {
   classificationService?: ClassificationService;
+}
+
+function isEnoent(err: unknown): boolean {
+  return (err as NodeJS.ErrnoException).code === 'ENOENT';
+}
+
+async function drainPendingDocumentDeletions(store: StoreService, fileService: FileService): Promise<void> {
+  for (const storagePath of store.listPendingDocumentDeletions()) {
+    try {
+      await fileService.deleteDocument(storagePath);
+      store.completeDocumentFileDeletion(storagePath);
+    } catch (err: unknown) {
+      if (isEnoent(err)) {
+        store.completeDocumentFileDeletion(storagePath);
+      } else {
+        console.warn(`Could not delete queued document file ${storagePath}:`, (err as Error).message);
+      }
+    }
+  }
+}
+
+async function reconcileDocumentStorage(store: StoreService, fileService: FileService): Promise<void> {
+  await drainPendingDocumentDeletions(store, fileService);
+
+  for (const doc of store.getDocuments()) {
+    if (!(await fileService.documentExists(doc.storagePath))) {
+      console.warn(`Removing document row with missing file: ${doc.originalName}`);
+      store.removeDocument(doc.id);
+    }
+  }
+
+  const referenced = new Set(store.getDocuments().map(doc => doc.storagePath));
+  for (const storagePath of await fileService.listDocumentFiles()) {
+    if (!referenced.has(storagePath)) {
+      store.queueDocumentFileDeletion(storagePath);
+      await drainPendingDocumentDeletions(store, fileService);
+    }
+  }
 }
 
 export async function createApp(dataDir: string, overrides: AppOverrides = {}): Promise<Express> {
@@ -24,6 +63,7 @@ export async function createApp(dataDir: string, overrides: AppOverrides = {}): 
 
   const fileService = new FileService(dataDir);
   await fileService.ensureDirs();
+  await reconcileDocumentStorage(store, fileService);
 
   const embeddingService = new EmbeddingService(store);
 
@@ -59,6 +99,7 @@ export async function createApp(dataDir: string, overrides: AppOverrides = {}): 
   app.use('/api/chat', createChatRoutes({ store, chatService, agenticChatService }));
   app.use('/api/projects', createProjectRoutes({ store }));
   app.use('/api/holdings', createHoldingRoutes({ store }));
+  app.use('/api/watchlist', createWatchlistRoutes({ store }));
 
   return app;
 }

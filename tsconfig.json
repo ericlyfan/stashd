@@ -1,9 +1,17 @@
 {
   "compilerOptions": {
     "target": "ES2022",
+    "module": "ESNext",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "resolveJsonModule": true
-  }
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "jsx": "react-jsx",
+    "baseUrl": ".",
+    "paths": {
+      "@stashd/shared": ["packages/shared/src/index.ts"]
+    }
+  },
+  "include": ["packages/*/src"]
 }

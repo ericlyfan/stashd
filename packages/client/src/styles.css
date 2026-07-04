@@ -4552,6 +4552,425 @@ body.dragging-dock {
   }
 }
 
+/* Secondary figure inside a stat tile label / table cell (e.g. the % beside a
+   dollar change). */
+.stat-sub {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+  color: var(--ink-faint);
+  margin-left: 4px;
+}
+.h-sub {
+  display: block;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-faint);
+  margin-top: 1px;
+}
+.h-lots {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  background: rgba(28, 24, 20, 0.06);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.h-ccy {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.05em;
+  color: var(--ink-faint);
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+.tf-base {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-faint);
+  margin-left: 6px;
+  letter-spacing: 0.02em;
+}
+
+/* Base-currency picker in the portfolio header. */
+.base-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--ink-2);
+}
+.base-picker span {
+  font-family: var(--mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.base-picker select {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink);
+  background: var(--card-raised);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 6px;
+  cursor: pointer;
+}
+
+/* ── Portfolio performance chart ─────────────────────────────────────────── */
+.perf-chart {
+  margin-top: 16px;
+  padding: 16px 18px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card-raised);
+}
+.perf-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.perf-value {
+  font-family: var(--mono);
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--ink);
+  line-height: 1.1;
+}
+.perf-change {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  margin-top: 3px;
+}
+.perf-change-lbl {
+  color: var(--ink-faint);
+  margin-left: 3px;
+}
+.perf-ranges {
+  display: flex;
+  gap: 3px;
+  flex-wrap: wrap;
+}
+.perf-range {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  color: var(--ink-2);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+.perf-range:hover {
+  background: rgba(28, 24, 20, 0.05);
+}
+.perf-range.active {
+  color: var(--ink);
+  background: rgba(28, 24, 20, 0.08);
+  border-color: var(--line);
+  font-weight: 600;
+}
+.perf-plot {
+  position: relative;
+  width: 100%;
+  height: 240px;
+}
+.perf-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+}
+.perf-tip {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  pointer-events: none;
+  background: var(--ink);
+  color: var(--paper);
+  border-radius: 6px;
+  padding: 4px 8px;
+  white-space: nowrap;
+  font-size: 11px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+}
+.perf-tip-val {
+  font-family: var(--mono);
+  font-weight: 600;
+}
+.perf-tip-date {
+  font-size: 10px;
+  opacity: 0.75;
+}
+.perf-foot {
+  display: flex;
+  gap: 16px;
+  margin-top: 6px;
+}
+.perf-legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+.perf-legend-line {
+  width: 16px;
+  height: 0;
+  border-top: 2px solid var(--moss);
+}
+.perf-legend-line.cost {
+  border-top: 1px dashed var(--ink-faint);
+}
+.perf-empty {
+  padding: 26px 8px;
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.55;
+  text-align: center;
+}
+
+/* ── Holding transactions (lots) editor ──────────────────────────────────── */
+.lots .lots-summary {
+  font-family: var(--mono);
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--ink-faint);
+  margin-left: 8px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.lots-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.lot-row {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+}
+.lot-row.editing .lot-main {
+  border-color: var(--gold);
+}
+.lot-main {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+  cursor: pointer;
+  font-size: 12px;
+}
+.lot-main:hover {
+  background: var(--card-raised);
+}
+.lot-date {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-2);
+}
+.lot-type {
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+.lot-buy {
+  color: #2f7d4f;
+  background: rgba(63, 125, 79, 0.12);
+}
+.lot-sell {
+  color: #c0392b;
+  background: rgba(192, 57, 43, 0.12);
+}
+.lot-detail {
+  font-family: var(--mono);
+  color: var(--ink);
+}
+.lot-fee {
+  font-size: 10px;
+  color: var(--ink-faint);
+}
+.lot-del {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--ink-faint);
+  cursor: pointer;
+}
+.lot-del:hover {
+  color: #c0392b;
+  border-color: #c0392b;
+}
+.lot-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.lot-form .input {
+  width: auto;
+  flex: 1;
+  min-width: 78px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+.lot-form .input[type='date'] {
+  flex: 0 0 auto;
+  min-width: 130px;
+}
+.lot-typetoggle {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.lot-typetoggle button {
+  font-size: 11px;
+  padding: 6px 10px;
+  background: var(--card);
+  border: none;
+  cursor: pointer;
+  color: var(--ink-2);
+}
+.lot-typetoggle button.active {
+  background: var(--ink);
+  color: var(--paper);
+  font-weight: 600;
+}
+
+/* ── Watchlist ───────────────────────────────────────────────────────────── */
+.watchlist {
+  margin-top: 30px;
+}
+.watchlist-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.watchlist-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.watchlist-add .input {
+  width: 260px;
+  max-width: 60vw;
+  padding: 6px 10px;
+  font-size: 13px;
+}
+.watchlist-empty {
+  color: var(--ink-2);
+  font-size: 13px;
+  padding: 14px 2px;
+}
+.watchlist-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: var(--ink-faint);
+  border-radius: 5px;
+  cursor: pointer;
+}
+.watchlist-x:hover {
+  color: #c0392b;
+  background: rgba(192, 57, 43, 0.1);
+}
+
+/* ── Stock detail page ───────────────────────────────────────────────────── */
+.back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--ink-2);
+  margin-bottom: 12px;
+}
+.back-link:hover {
+  color: var(--ink);
+}
+.stock-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+.stock-ticker {
+  font-family: var(--mono);
+}
+.stock-price {
+  text-align: right;
+}
+.stock-price-now {
+  font-family: var(--mono);
+  font-size: 26px;
+  font-weight: 600;
+  color: var(--ink);
+  line-height: 1.1;
+}
+.stock-price-day {
+  font-family: var(--mono);
+  font-size: 13px;
+  margin-top: 2px;
+}
+.stock-position {
+  margin-top: 20px;
+}
+.stat-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 26px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card-raised);
+}
+.mini-stat .num {
+  font-family: var(--mono);
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.mini-stat .lbl {
+  font-size: 11px;
+  color: var(--ink-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-top: 2px;
+}
+.stock-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
+
 /* Divider between category groups. A 2px rule (wider than the 1px row
    separators) reliably wins the border-collapse conflict so it's actually
    visible, and the extra top padding opens a clear gap above each new group. */

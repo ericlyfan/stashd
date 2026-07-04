@@ -9,9 +9,15 @@ import {
   DocumentLink,
   Holding,
   HoldingInput,
+  HoldingLot,
+  HoldingLotInput,
   LineItem,
   LineItemInput,
   PortfolioSnapshot,
+  StockHistory,
+  WatchlistItem,
+  WatchlistItemInput,
+  WatchlistItemWithQuote,
   ProjectDetail,
   ProjectSummary,
   SearchHit,
@@ -20,7 +26,20 @@ import {
 } from '@stashd/shared';
 
 export type { ProjectSummary, ProjectDetail, LineItem, LineItemInput, DocumentLink } from '@stashd/shared';
-export type { Holding, HoldingInput, HoldingWithQuote, PortfolioSnapshot, PortfolioTotals } from '@stashd/shared';
+export type {
+  Holding,
+  HoldingInput,
+  HoldingWithQuote,
+  HoldingLot,
+  HoldingLotInput,
+  PortfolioSnapshot,
+  PortfolioTotals,
+  StockHistory,
+  HistoryDay,
+  WatchlistItem,
+  WatchlistItemInput,
+  WatchlistItemWithQuote,
+} from '@stashd/shared';
 
 export type { UploadResponse } from '@stashd/shared';
 
@@ -333,9 +352,10 @@ export function getDocumentLinks(docId: string): Promise<DocumentLink[]> {
 // ── Portfolio (stock holdings) ───────────────────────────────────────────────
 
 // The whole portfolio: every holding enriched with its live price + returns,
-// plus rollups. Prices are fetched server-side per request (cached ~60s).
-export function getPortfolio(): Promise<PortfolioSnapshot> {
-  return req<PortfolioSnapshot>('/holdings');
+// plus rollups in `base` currency. Prices are fetched server-side per request
+// (cached ~60s); holdings are valued natively and converted via live FX.
+export function getPortfolio(base?: string): Promise<PortfolioSnapshot> {
+  return req<PortfolioSnapshot>(`/holdings${base ? `?base=${encodeURIComponent(base)}` : ''}`);
 }
 
 export function createHolding(input: HoldingInput): Promise<Holding> {
@@ -356,6 +376,52 @@ export function updateHolding(id: string, input: HoldingInput): Promise<Holding>
 
 export function deleteHolding(id: string): Promise<void> {
   return req<void>(`/holdings/${id}`, { method: 'DELETE' });
+}
+
+// One stock's daily close history + live quote, for the stock detail page.
+export function getStockHistory(symbol: string): Promise<StockHistory> {
+  return req<StockHistory>(`/holdings/history/${encodeURIComponent(symbol)}`);
+}
+
+// ── Watchlist ────────────────────────────────────────────────────────────────
+export function getWatchlist(): Promise<WatchlistItemWithQuote[]> {
+  return req<WatchlistItemWithQuote[]>('/watchlist');
+}
+
+export function addWatchlist(input: WatchlistItemInput): Promise<WatchlistItem> {
+  return req<WatchlistItem>('/watchlist', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+export function removeWatchlist(id: string): Promise<void> {
+  return req<void>(`/watchlist/${id}`, { method: 'DELETE' });
+}
+
+export function listLots(holdingId: string): Promise<HoldingLot[]> {
+  return req<HoldingLot[]>(`/holdings/${holdingId}/lots`);
+}
+
+export function addLot(holdingId: string, input: HoldingLotInput): Promise<HoldingLot> {
+  return req<HoldingLot>(`/holdings/${holdingId}/lots`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateLot(holdingId: string, lotId: string, input: HoldingLotInput): Promise<HoldingLot> {
+  return req<HoldingLot>(`/holdings/${holdingId}/lots/${lotId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteLot(holdingId: string, lotId: string): Promise<void> {
+  return req<void>(`/holdings/${holdingId}/lots/${lotId}`, { method: 'DELETE' });
 }
 
 export function subscribeClassify(jobId: string, onEvent: (event: SSEEvent) => void): EventSource {

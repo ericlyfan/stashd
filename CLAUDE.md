@@ -6,7 +6,12 @@ It is the single living document for **Stashd** — both the _operating manual_ 
 verify, and not break things) and the _architecture & feature reference_ (how it all works). Keep this
 file honest and current; it is the project's memory and the first thing agents load.
 
-_Last updated: 2026-07-03 (**fuzzy near-duplicate detection**: alongside the exact SHA-256 check, docs now carry a 64-bit SimHash over `extractedText` and images a 64-bit dHash (`services/nearDuplicate.ts`, sharp); the classify SSE `complete` event flags a content-level near-copy (advisory, Hamming distance) via `store.findNearDuplicate`, surfaced as a softer ReviewSheet/tray banner. Prior same day: sidebar footer live clock + server status bar; icon-only dock mode toggle; ledger "current project"; portfolio Nasdaq fallback)_
+_Last updated: 2026-07-03 (**portfolio: per-stock history + watchlist** — dropped the portfolio-wide
+performance graph; clicking a holding/watchlist row opens a **stock detail page** (`/portfolio/:symbol`,
+`GET /holdings/history/:symbol`, `StockHistoryChart`) with that stock's price chart; added a **watchlist**
+(`watchlist` table, `/api/watchlist`, section below holdings). **US history via Cboe's CDN**
+(`cdn.cboe.com`, reliable where Nasdaq-history throttles), Canadian via TMX. Prior same day: TMX pricing
++ CDR guard; **multi-currency** (native + base FX, `FxService`); lot tracking; near-dup detection)_
 
 > **How this file is organized.** Part I is the operating manual — read it first. Part II is the
 > detailed architecture/feature reference; reach for the relevant section when you touch that area.
@@ -75,7 +80,9 @@ npm-workspaces monorepo; three packages under `packages/`.
   - `emailParse.ts` — `.eml`/`.msg` → headers + body + attachments.
   - `EmbeddingService.ts` — chunk + embed (local Ollama), vector index lifecycle.
   - `ChatService.ts` — RAG retrieval + tool loop.
-  - `QuoteService.ts` — live stock quotes via a provider chain (Yahoo → Nasdaq → stale cache), no key, briefly cached, failure-tolerant.
+  - `QuoteService.ts` — live stock quotes (`fetchQuotes`: Yahoo → Nasdaq(US) → TMX(Canadian)) and daily-close history (`fetchHistory`: Cboe CDN(US) / TMX(Canadian) → Yahoo → Nasdaq), no key, cached, failure-tolerant.
+  - `FxService.ts` — foreign-exchange rates (`fetchRates`, Frankfurter → open.er-api → stale → identity) for multi-currency portfolio totals, no key, cached ~1h, failure-tolerant.
+  - `positions.ts` — average-cost position accounting from a holding's lots (`derivePosition`).
   - `categoryStyle.ts` — auto icon/color for new categories.
 - `providers/` — model-provider registry keyed by `PROVIDER`; `OllamaProvider` is the only impl.
 - `agentic/` — standalone experimental document agent loop (`glm-4.7:cloud` by default) with swappable
@@ -190,6 +197,16 @@ Embeddings run on a **separate, local** Ollama (the cloud endpoint serves no emb
   guarded migration) and backfilled at boot; a linear Hamming scan is fine at personal-stash scale.
   Signatures are 16-hex 64-bit strings; `simhash64` returns undefined below `SIMHASH_MIN_CHARS` (short
   text collides too easily), `perceptualHash` never throws (decode failure → no signature).
+- **Market-data providers by market — and the CDR trap.** Quotes: US via **Nasdaq** (USD), Canadian via
+  **TMX** (`app-money.tmx.com`, CAD); Yahoo is the nominal primary but 429-blocked from this sandbox.
+  History: US via **Cboe's CDN** (`cdn.cboe.com/api/global/delayed_quotes/charts/historical/<S>.json`,
+  daily OHLC back to ~2004, no key, doesn't throttle) → Yahoo → Nasdaq; Canadian via **TMX**. (Nasdaq's
+  *historical* endpoint rate-limits bursts into uselessness — that's why Cboe is the primary US history
+  source, not Nasdaq.) **Never route a US ticker to TMX** — its Canadian CDR trades at a different price
+  (AAPL CDR ≈ 1/7 of AAPL). Guards: `fetchTmx` rejects `"CDR"`-named results, the quote chain only falls
+  to TMX on Nasdaq's explicit `NOT_US`, and `fetchHistory` picks the provider from the resolved quote
+  currency (never a guess). A throttled US quote → **unpriced**, not mispriced. `GET
+  /holdings/history/:symbol` ends the series on today's live price (Cboe's last close lags a day or two).
 - **Abandoned uploads leak temp dirs.** UI-discarded/skipped uploads clean up via
   `DELETE /documents/job/:jobId`, but uploads abandoned by closing the tab leave `data/temp/<jobId>/`
   (and possibly an `.extracted.txt` sidecar) indefinitely — there's no sweep job.
@@ -285,7 +302,8 @@ embeddings use a separate local Ollama (see Part I env vars).
    the upload entirely — client item and server temp dir both — without filing anything.
 4. **File** — `POST /api/documents/file/:jobId` persists the document: creates the category if new
    (auto icon/color, see §4), moves the file into permanent storage, computes its `contentHash`
-   (SHA-256), and inserts the row. Text extracted at classify time (dispatcher output or image
+   (SHA-256) plus the near-dup signatures (`simHash` over text, `perceptualHash`/dHash over images —
+   see §3 and `services/nearDuplicate.ts`), and inserts the row. Text extracted at classify time (dispatcher output or image
    transcription, capped at 20,000 chars) is written to a sidecar (`data/temp/<jobId>.extracted.txt`)
    so it survives server restarts, then stored as `extractedText` and the sidecar deleted; if the
    sidecar is missing the **extraction dispatcher re-runs** for any text-bearing type as a last-resort
@@ -310,9 +328,10 @@ in the Inbox and the sidebar badge.
 - When the body text matched, the response `SearchHit` carries a `snippet` (FTS5 `snippet()`,
   match-aware) which the UI renders in italics on result cards/rows so you can see _why_ it matched.
 - **Startup backfill** (`textExtraction.ts`, `backfillDerivedFields`): on boot the server re-parses any
-  PDF lacking `extractedText` and hashes any file lacking `contentHash`, so pre-feature documents
-  become searchable and duplicate-checkable. Image text can't be backfilled (it comes from the model
-  at classify time only).
+  PDF lacking `extractedText`, hashes any file lacking `contentHash`, and computes the near-dup
+  signatures (`simHash` from text, `perceptualHash` by decoding images off disk) for any doc missing
+  them, so pre-feature documents become searchable and (exact + fuzzy) duplicate-checkable. Image text
+  can't be backfilled (it comes from the model at classify time only).
 - Client: sidebar search box (the `/` key focuses it from anywhere) live-navigates to `/search?q=…`
   with a 180 ms debounce.
 
@@ -469,12 +488,20 @@ what you own, what you paid, and what it's worth now. Like Ledgers it's largely 
 document organizer, connecting only through an optional one-way link (a holding → a supporting stash
 document, e.g. a brokerage statement).
 
-**Model** (`holdings` table, plain SQLite — no FTS/vec): each **holding** carries a `symbol` (ticker),
-optional `name`, `shares`, `buyPrice` (per-share cost basis), an optional `manualPrice` (per-share
-current-price override), an optional `currency`, an optional `documentId`, and `notes`. **The current
-price is never stored** — it's fetched live per request; `manualPrice` is the fallback. Money rollups
-(cost basis / market value / gain / return / day-change) are computed per request in the route's
-`buildSnapshot`, never persisted.
+**Model** (`holdings` + `holding_lots` tables, plain SQLite — no FTS/vec): each **holding** carries a
+`symbol` (ticker), optional `name`, `shares`, `buyPrice` (per-share cost basis), an optional
+`manualPrice` (per-share current-price override), an optional `currency`, an optional `documentId`, and
+`notes`. **The current price is never stored** — it's fetched live per request; `manualPrice` is the
+fallback. Money rollups are computed per request in the route's `buildSnapshot`, never persisted.
+
+**Lots (dated transactions).** A holding can have **`holding_lots`** — dated buys/sells (`type`,
+`trade_date`, `shares`, `price`, optional `fee`/`notes`). When a holding has lots they are the **source
+of truth** for its position; with none, the stored `shares`/`buyPrice` act as a single undated opening
+lot (so pre-lot holdings keep working). `services/positions.ts` `derivePosition` folds the lots by
+**average cost** (a buy adds shares + cost incl. fee; a sell realizes `qty × (price − running avg cost)`
+and reduces the open basis) → `{ openShares, costBasis, avgCost, realizedGain, lotCount }`. `buildSnapshot`
+**overrides** the enriched holding's `shares`/`buyPrice`(=avg cost)/`costBasis` with the derived values,
+so the client reads the same fields either way. Lots cascade-delete with the holding.
 
 **Live prices** (`QuoteService.ts`): `fetchQuotes` resolves each symbol through a **provider chain**, no
 API key: **(1) Yahoo** chart endpoint (`/v8/finance/chart/<SYMBOL>`, `meta.regularMarketPrice` +
@@ -489,24 +516,68 @@ Nasdaq is the reliable fallback that made the feature actually work. If both are
 is `false` and holdings show their `manualPrice` or render unpriced (the always-works manual fallback),
 with a "live prices unavailable" note.
 
+**Canadian listings (TMX).** Nasdaq is **US-only** and Yahoo is rate-limited from here, so Canadian
+holdings are priced from the **Toronto exchange's own GraphQL API** (`app-money.tmx.com`, `fetchTmx` /
+`fetchTmxHistory`), in CAD, no key. It resolves both bare symbols (`VFV`) and suffixed (`VFV.TO`), for
+quotes **and** history. **CDR hazard:** a US ticker (e.g. `AAPL`) has a *Canadian Depositary Receipt*
+on the TMX at a wholly different price/currency, so TMX must never be used for a US symbol. Two guards
+enforce this: `fetchTmx` **rejects any result whose name contains "CDR"** (`isCdrName`), and provider
+routing never *guesses* — a bare symbol only falls to TMX when Nasdaq **confirms** it isn't a US listing
+(`NOT_US`, from Nasdaq's `rCode 400`), and **history** is routed by the symbol's *already-resolved quote
+currency* (`fetchHistory(symbol, canadian)` — TMX only when the live quote came back CAD or the symbol is
+Canadian-suffixed). A US ticker whose US quote was merely throttled stays **unpriced**, never mispriced.
+Other non-US exchanges (`.L` London, etc.) still rely on Yahoo (`meta.currency`).
+
 **Price resolution & returns** (`routes/holdings.ts`): per holding the current price resolves to the
 live quote (`priceSource: 'live'`), else the manual override (`'manual'`), else nothing (`'none'`,
-unpriced). `costBasis = shares × buyPrice`; when priced, `marketValue = shares × currentPrice`,
-`gain = marketValue − costBasis`, `gainPct = gain / costBasis`, and — for live quotes with a previous
-close — a day change. **Portfolio return % is measured against the cost basis of the _priced_ holdings
-only**, so an unpriced position doesn't distort the percentage; the invested (cost-basis) total still
-counts every holding.
+unpriced). When priced: `marketValue = openShares × currentPrice`; `gain`/`gainPct` are **unrealized**
+(`marketValue − costBasis`); `totalGain`/`totalReturnPct` fold in `realizedGain` from sells; and — for
+live quotes with a previous close — a `dayChange`. **Portfolio return % is measured against the cost
+basis of the _priced_ holdings only**, so an unpriced position doesn't distort the percentage.
 
-**UI** (`pages/PortfolioPage.tsx`, `components/HoldingDialog.tsx`): the page fetches its own
-`PortfolioSnapshot` (it doesn't ride in the global `store`, since pricing is heavier than the other
-`refresh()` loads), shows a four-tile summary strip (invested / market value / total gain-loss /
-return, gain colored green/red), an advisory banner when `quotesLive` is false, and a dense holdings
-table (tabular-nums, a totals `tfoot`, `MANUAL` tags on overridden prices, a paperclip on linked rows).
-A **Refresh** button re-prices (spinner while in flight). Clicking a row opens `HoldingDialog`
-(create/edit/delete) — leave the current-price field blank to auto-fetch, or set it to override; the
-same search-popover the ledgers/chat use attaches a supporting document. Deleting a document nulls any
-holding link inside `removeDocument`'s transaction (alongside the ledger links), so it dangles
-harmlessly.
+**Multi-currency.** Each holding has a **native currency** = the live quote's `meta.currency` → else its
+manual `currency` field → else the base. All per-holding money (price, cost basis, market value, gain,
+day change) stays **native**. The portfolio **totals + weights + chart** are in a **base currency**
+(request `?base=CAD`, default `USD`; the client persists a base selector in `localStorage`
+`stashd.portfolioBase`, default `CAD`). `buildSnapshot` sets each holding's `fxToBase` from
+`FxService.fetchRates(base, currencies)` (Frankfurter → er-api → stale → identity 1.0 with `fxLive:false`)
+and sums `native × fxToBase` into base-currency totals; `weight = marketValueBase ÷ total base market
+value` (currency-invariant). If FX is unavailable, `fxLive` is false, amounts are summed unconverted, and
+the UI shows an advisory note.
+
+**Per-stock history** (`GET /holdings/history/:symbol` → `StockHistory`): one stock's live quote +
+daily-close series (`QuoteService.fetchHistory(symbol, canadian)`; TMX for Canadian, Nasdaq for US,
+cached ~6h, native currency — no FX). Powers the **stock detail page** (route `/portfolio/:symbol`,
+`pages/StockPage.tsx`): clicking any holding **or** watchlist row opens it. It shows the ticker · name ·
+live price + day change (native currency), the **`StockHistoryChart`** (`components/StockHistoryChart.tsx`
+— hand-built inline SVG price line, range selector `1W 1M 3M 6M YTD 1Y ALL`, hover tooltip, and a
+graceful "history unavailable" state when `points` is empty), and either a
+**position summary** (shares · avg cost · market value · total return · weight) with **Edit** (the
+`HoldingDialog`) for an owned stock, or **Add to holdings** / **Add-to-/Remove-from-watchlist** actions
+for one you don't own. (There is **no** portfolio-wide performance graph — removed in favor of this
+per-stock view.)
+
+**Watchlist** (`watchlist` table; `routes/watchlist.ts` mounted at `/api/watchlist`): stocks you follow
+but don't own. `GET /watchlist` returns items enriched with live quotes (native currency, day change);
+`POST /watchlist { symbol }` is idempotent (returns the existing item on a duplicate symbol);
+`DELETE /watchlist/:id`. Surfaced as a **section below the holdings table** on `/portfolio` — an
+add-ticker input and a compact table (symbol · price · today), rows linking to the stock page, each with
+a remove ×. Independent of holdings (no positions).
+
+**UI** (`pages/PortfolioPage.tsx`, `components/HoldingDialog.tsx`): the page fetches its
+`PortfolioSnapshot` + watchlist. It shows a four-tile strip (**Book cost / Market value / Today (day $ +
+%) / Total return ($ incl. realized + %)**, gain colored green/red), an advisory banner when
+`quotesLive`/`fxLive` is false, and a dense holdings table with columns **Shares · Avg cost · Current ·
+Book cost · Market value · Weight · Today · Total return** (per-row money in the holding's **native
+currency** with a currency tag by the ticker; `MANUAL` tags, an `N lots` badge, a paperclip on linked
+rows; tiles + `tfoot` totals in the **base currency**). A header **base-currency selector** (persisted,
+default CAD) re-fetches on change. **Clicking a holding row navigates to its stock page** (not the
+dialog); the **Add holding** button opens `HoldingDialog` for a new position (it has a **Currency**
+field auto-detected from the quote, a hint to use exchange-suffixed tickers for non-US listings, and —
+when editing — a **Transactions**/`LotsEditor` section). Leave the current-price field blank to
+auto-fetch or set it to override; the same search-popover the ledgers/chat use attaches a supporting
+document. Deleting a document nulls any holding link inside `removeDocument`'s transaction (alongside the
+ledger links), so it dangles harmlessly.
 
 ## 4. Categories ("drawers")
 
@@ -597,7 +668,7 @@ Components call API functions from `api.ts` directly and then `refresh()`.
 | `GET /health`                                    | liveness probe → `{ ok: true }` (sidebar status-bar heartbeat)                                                       |
 | `POST /documents/upload`                         | multipart upload → `{ jobId, duplicate? }` (413 over 50 MB, 400 bad type)                                            |
 | `DELETE /documents/job/:jobId`                   | discard an in-flight upload (temp dir + sidecar); idempotent 204                                                     |
-| `GET /documents/process/:jobId`                  | SSE: `extracting → classifying → complete` (with classification) or `error`                                          |
+| `GET /documents/process/:jobId`                  | SSE: `extracting → classifying → complete` (with classification + optional `nearDuplicate` content-match) or `error`  |
 | `POST /documents/file/:jobId`                    | persist a reviewed document; response includes `attachmentsSpawned` (emails fan out attachments into their own docs) |
 | `GET /documents?search=&category=`               | list/search (SearchHits with snippets when searching)                                                                |
 | `GET /documents/:id` / `GET /documents/:id/file` | metadata / raw file                                                                                                  |
@@ -626,10 +697,18 @@ Components call API functions from `api.ts` directly and then `refresh()`.
 | `PATCH /projects/:id/items/:itemId`              | partial-update a line item (`documentId: null` clears the link)                                                      |
 | `DELETE /projects/:id/items/:itemId`             | delete a line item                                                                                                   |
 | `GET /projects/by-document/:docId`               | line items linking a given document (the document → ledger direction)                                                |
-| `GET /holdings`                                  | the whole portfolio: holdings enriched with live price + computed returns, plus rollups (`PortfolioSnapshot`)         |
+| `GET /holdings?base=CAD`                         | the whole portfolio: holdings (native currency) + returns from lots, plus rollups converted to `base` (`PortfolioSnapshot`; default base USD) |
+| `GET /holdings/history/:symbol`                  | one stock's live quote + daily-close series (`StockHistory`, native currency; declared before `/:id`); empty `points` w/o history |
 | `POST /holdings`                                 | add a holding `{ symbol, name?, shares?, buyPrice?, manualPrice?, documentId?, notes? }` (400 without a symbol)       |
 | `PATCH /holdings/:id`                            | partial-update a holding (`documentId: null` clears the link)                                                        |
-| `DELETE /holdings/:id`                           | delete a holding                                                                                                     |
+| `DELETE /holdings/:id`                           | delete a holding (and its lots)                                                                                      |
+| `GET /holdings/:id/lots`                         | a holding's dated buy/sell transactions                                                                             |
+| `POST /holdings/:id/lots`                        | add a lot `{ type, date, shares, price, fee?, notes? }` (400 on a bad date/shares/price/type)                       |
+| `PATCH /holdings/:id/lots/:lotId`                | partial-update a lot                                                                                                |
+| `DELETE /holdings/:id/lots/:lotId`               | delete a lot                                                                                                        |
+| `GET /watchlist`                                 | watched stocks enriched with live quotes (`WatchlistItemWithQuote[]`, native currency)                              |
+| `POST /watchlist`                                | add a watched symbol `{ symbol, name?, notes? }` (idempotent — returns the existing item on a duplicate)            |
+| `DELETE /watchlist/:id`                          | remove a watched stock                                                                                             |
 
 ## 7. Where it's headed
 

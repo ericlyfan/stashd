@@ -294,34 +294,83 @@ export interface Quote {
   currency?: string;
 }
 
+// A dated buy or sell against a holding. Lots are the source of truth for a
+// holding's position and cost basis when present; a holding with no lots falls
+// back to its stored shares/buyPrice as a single undated opening lot. Accounting
+// is average-cost: a sell realizes qty × (price − running avg cost).
+export type LotType = "buy" | "sell";
+
+export interface HoldingLot {
+  id: string;
+  holdingId: string;
+  type: LotType;
+  date: string; // trade date, YYYY-MM-DD
+  shares: number; // > 0
+  price: number; // per-share trade price
+  fee?: number; // optional commission/fee, added to buy cost / netted off a sale
+  notes?: string;
+  createdAt: string;
+}
+
+// Fields a client may set on a lot; the server owns id / holdingId / timestamps.
+export interface HoldingLotInput {
+  type?: LotType;
+  date?: string;
+  shares?: number;
+  price?: number;
+  fee?: number;
+  notes?: string;
+}
+
 // Where a holding's current price came from: a live quote, the manual override,
 // or nothing (unpriced).
 export type PriceSource = "live" | "manual" | "none";
 
-// A holding enriched with its resolved current price and computed returns. All
-// money-derived fields are undefined when no current price is known.
+// A holding enriched with its resolved current price and computed returns. When
+// the holding has lots, `shares`/`buyPrice`(avg cost)/`costBasis` here are the
+// *derived* position (overriding the stored legacy fields), so the UI reads the
+// same fields either way. `gain`/`gainPct` are unrealized; `totalGain` folds in
+// realized gains from sells. All money-derived fields are undefined when no
+// current price is known.
 export interface HoldingWithQuote extends Holding {
   currentPrice?: number; // resolved: live quote, else manualPrice
   priceSource: PriceSource;
-  costBasis: number; // shares × buyPrice
-  marketValue?: number; // shares × currentPrice
-  gain?: number; // marketValue − costBasis
-  gainPct?: number; // gain / costBasis
+  costBasis: number; // open shares × avg cost
+  avgCost: number; // per-share average cost of the open position
+  lotCount: number; // number of transactions backing the position (0 = legacy)
+  realizedGain: number; // gains locked in by past sells (average-cost)
+  marketValue?: number; // shares × currentPrice (native currency)
+  // Native (per-exchange) currency of this holding, and the rate that converts
+  // it to the portfolio's base currency (1 for base-currency holdings). Money
+  // fields above are in the native currency; `marketValueBase` is converted, for
+  // totals + weight.
+  currency: string;
+  fxToBase: number;
+  marketValueBase?: number;
+  weight?: number; // marketValueBase ÷ portfolio base market value (0..1)
+  gain?: number; // unrealized: marketValue − costBasis
+  gainPct?: number; // unrealized gain ÷ costBasis
+  totalGain?: number; // realizedGain + unrealized gain
+  totalReturnPct?: number; // totalGain ÷ costBasis
   dayChange?: number; // shares × (price − previousClose)
   dayChangePct?: number;
   quoteCurrency?: string;
 }
 
 // Portfolio-wide rollups, computed per request — never persisted. Money sums use
-// only holdings whose current price is known.
+// only holdings whose current price is known, and are in the base currency.
 export interface PortfolioTotals {
   holdingCount: number;
   pricedCount: number; // holdings with a known current price
-  costBasis: number; // total invested, all holdings
+  costBasis: number; // total invested (open positions), all holdings
   marketValue: number; // total value of priced holdings
-  gain: number;
+  gain: number; // unrealized
   gainPct: number;
+  realizedGain: number; // total locked-in gains from sells
+  totalGain: number; // realized + unrealized
+  totalReturnPct: number; // totalGain ÷ priced cost basis
   dayChange: number;
+  dayChangePct: number; // dayChange ÷ (marketValue − dayChange)
 }
 
 export interface PortfolioSnapshot {
@@ -329,6 +378,54 @@ export interface PortfolioSnapshot {
   totals: PortfolioTotals;
   quotedAt: string; // when quotes were fetched
   quotesLive: boolean; // false when the provider returned nothing (offline/blocked)
+  baseCurrency: string; // currency the totals are expressed in
+  fxLive: boolean; // false when FX rates were unavailable (totals then unconverted)
+}
+
+// ── Per-stock history ────────────────────────────────────────────────────────
+// One symbol's daily close plus its live quote, for the stock detail page.
+// Single-currency (the stock's native currency) — no base/FX conversion.
+export interface HistoryDay {
+  date: string; // YYYY-MM-DD
+  close: number;
+}
+
+export interface StockHistory {
+  symbol: string;
+  name?: string;
+  currency: string;
+  currentPrice?: number;
+  previousClose?: number;
+  dayChange?: number; // currentPrice − previousClose (per share)
+  dayChangePct?: number;
+  priceSource: PriceSource;
+  points: HistoryDay[]; // oldest → newest; empty when history is unavailable
+}
+
+// ── Watchlist ────────────────────────────────────────────────────────────────
+// A stock the user is watching but doesn't (necessarily) own. Priced live like a
+// holding, in its native currency.
+export interface WatchlistItem {
+  id: string;
+  symbol: string;
+  name?: string;
+  notes?: string;
+  createdAt: string;
+}
+
+export interface WatchlistItemInput {
+  symbol?: string;
+  name?: string;
+  notes?: string;
+}
+
+export interface WatchlistItemWithQuote extends WatchlistItem {
+  currentPrice?: number;
+  previousClose?: number;
+  currency?: string;
+  dayChange?: number;
+  dayChangePct?: number;
+  priceSource: PriceSource;
 }
 
 // Fields a client may set on a holding; the server owns id / timestamps.

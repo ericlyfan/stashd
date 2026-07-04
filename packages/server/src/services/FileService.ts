@@ -1,5 +1,5 @@
 import { mkdir, readdir, readFile, rename, rm, rmdir, stat, unlink, writeFile } from 'fs/promises';
-import { extname, join, resolve, sep } from 'path';
+import { dirname, extname, join, relative, resolve, sep } from 'path';
 
 export class FileService {
   constructor(private readonly dataDir: string) {}
@@ -73,22 +73,69 @@ export class FileService {
     docId: string,
     originalName: string,
   ): Promise<string> {
+    const storagePath = this.documentStoragePath(categorySlug, docId, originalName);
+    await this.moveJobFileToStorage(jobId, storagePath);
+    return storagePath;
+  }
+
+  documentStoragePath(categorySlug: string, docId: string, originalName: string): string {
+    return join('documents', categorySlug, `${docId}${extname(originalName)}`);
+  }
+
+  async moveJobFileToStorage(jobId: string, storagePath: string): Promise<void> {
     const tempPath = await this.getTempFilePath(jobId);
     if (!tempPath) throw new Error(`No temp file for jobId: ${jobId}`);
 
-    const ext = extname(originalName);
-    const destDir = join(this.dataDir, 'documents', categorySlug);
+    const dest = this.absolutePath(storagePath);
+    const documentsRoot = resolve(this.dataDir, 'documents');
+    const target = resolve(dest);
+    if (!target.startsWith(documentsRoot + sep)) {
+      throw new Error(`Refusing to move outside documents dir: ${storagePath}`);
+    }
+
+    const destDir = dirname(dest);
     await mkdir(destDir, { recursive: true });
 
-    const filename = `${docId}${ext}`;
-    await rename(tempPath, join(destDir, filename));
+    await rename(tempPath, dest);
     await rmdir(this.tempDir(jobId)).catch(() => {});
-
-    return join('documents', categorySlug, filename);
   }
 
   async deleteDocument(storagePath: string): Promise<void> {
     await unlink(join(this.dataDir, storagePath));
+  }
+
+  async documentExists(storagePath: string): Promise<boolean> {
+    try {
+      await stat(this.absolutePath(storagePath));
+      return true;
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false;
+      throw err;
+    }
+  }
+
+  async listDocumentFiles(): Promise<string[]> {
+    const root = join(this.dataDir, 'documents');
+    const out: string[] = [];
+    const walk = async (dir: string): Promise<void> => {
+      let entries;
+      try {
+        entries = await readdir(dir, { withFileTypes: true });
+      } catch (err: unknown) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+        throw err;
+      }
+      for (const entry of entries) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          await walk(full);
+        } else if (entry.isFile()) {
+          out.push(join('documents', relative(root, full)));
+        }
+      }
+    };
+    await walk(root);
+    return out;
   }
 
   async getFileSize(absolutePath: string): Promise<number> {
