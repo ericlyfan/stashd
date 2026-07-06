@@ -6,12 +6,17 @@ It is the single living document for **Stashd** — both the _operating manual_ 
 verify, and not break things) and the _architecture & feature reference_ (how it all works). Keep this
 file honest and current; it is the project's memory and the first thing agents load.
 
-_Last updated: 2026-07-03 (**portfolio: per-stock history + watchlist** — dropped the portfolio-wide
-performance graph; clicking a holding/watchlist row opens a **stock detail page** (`/portfolio/:symbol`,
-`GET /holdings/history/:symbol`, `StockHistoryChart`) with that stock's price chart; added a **watchlist**
-(`watchlist` table, `/api/watchlist`, section below holdings). **US history via Cboe's CDN**
-(`cdn.cboe.com`, reliable where Nasdaq-history throttles), Canadian via TMX. Prior same day: TMX pricing
-+ CDR guard; **multi-currency** (native + base FX, `FxService`); lot tracking; near-dup detection)_
+_Last updated: 2026-07-05 (**portfolio overhaul + market discovery** — `/portfolio` now reads as a
+holdings dashboard: **allocation panel** (shared `components/Breakdown.tsx`, top-8 + gray "Other",
+by-holding / by-currency tabs), **sortable holdings columns**, **30-day sparklines**
+(`components/Sparkline.tsx` + `lib/trends.ts`, `GET /holdings/history/:symbol?days=N`), helpers
+deduped into `lib/gains.ts`. **Market discovery** landed the same day: `MarketService` +
+`/api/market/*` (no-key ticker search via Nasdaq autocomplete + TSX directory; US sector screener +
+movers via Nasdaq), a **`TickerSearch` typeahead** (watchlist add + Discover), a **Discover page**
+(`/discover`, reached from the portfolio embed — no sidebar entry) whose movers/sector panel is the
+shared **`MarketExplorer`** — also
+embedded compactly at the bottom of `/portfolio` — and a **redesigned stock detail page** (chart +
+period-returns strip + position/statistics rail with 52-week range meter + transactions table))_
 
 > **How this file is organized.** Part I is the operating manual — read it first. Part II is the
 > detailed architecture/feature reference; reach for the relevant section when you touch that area.
@@ -71,7 +76,8 @@ npm-workspaces monorepo; three packages under `packages/`.
 **Server** (`packages/server/src/`)
 
 - `app.ts` — wires services + routes; runs boot backfills. `index.ts` — listen loop.
-- `routes/` — `documents.ts`, `categories.ts`, `chat.ts`, `projects.ts`, `holdings.ts` (one router factory each).
+- `routes/` — `documents.ts`, `categories.ts`, `chat.ts`, `projects.ts`, `holdings.ts`,
+  `watchlist.ts`, `market.ts` (one router factory each).
 - `services/`
   - `StoreService.ts` — **all SQLite access** (better-sqlite3, WAL). Schema, migrations, queries.
   - `FileService.ts` — file storage under `data/documents/<slug>/` and `data/temp/<jobId>/`.
@@ -82,6 +88,7 @@ npm-workspaces monorepo; three packages under `packages/`.
   - `ChatService.ts` — RAG retrieval + tool loop.
   - `QuoteService.ts` — live stock quotes (`fetchQuotes`: Yahoo → Nasdaq(US) → TMX(Canadian)) and daily-close history (`fetchHistory`: Cboe CDN(US) / TMX(Canadian) → Yahoo → Nasdaq), no key, cached, failure-tolerant.
   - `FxService.ts` — foreign-exchange rates (`fetchRates`, Frankfurter → open.er-api → stale → identity) for multi-currency portfolio totals, no key, cached ~1h, failure-tolerant.
+  - `MarketService.ts` — market discovery, no key, cached, failure-tolerant: `searchSymbols` (Nasdaq autocomplete for US + the TSX company directory for Canadian, ".TO"-suffixed), `screenSector` (Nasdaq screener, 11 sector tokens), `marketMovers` (most active / gainers / losers).
   - `positions.ts` — average-cost position accounting from a holding's lots (`derivePosition`).
   - `categoryStyle.ts` — auto icon/color for new categories.
 - `providers/` — model-provider registry keyed by `PROVIDER`; `OllamaProvider` is the only impl.
@@ -459,7 +466,9 @@ ledgers"** card listing every line item that references it (`GET /api/projects/b
 Deleting a document nulls those links inside `removeDocument`'s transaction, so they dangle harmlessly.
 
 **UI** (`pages/LedgersPage.tsx`, `pages/LedgerPage.tsx`): the index is a grid of project cards with a
-stats strip. A project page has the money stats strip, by-category/by-vendor breakdown bars, a **spend
+stats strip. A project page has the money stats strip, by-category/by-vendor breakdown bars (the
+segmented-bar-plus-rows view is the shared `components/Breakdown.tsx`, also used by the portfolio's
+allocation panel), a **spend
 timeline** (`components/SpendTimeline.tsx`), and the line-item table (dense, tabular-nums, a totals
 `tfoot`); clicking a row opens `LineItemDialog` (all fields, with **Total paid** auto-summing from paid
 
@@ -545,39 +554,75 @@ and sums `native × fxToBase` into base-currency totals; `weight = marketValueBa
 value` (currency-invariant). If FX is unavailable, `fxLive` is false, amounts are summed unconverted, and
 the UI shows an advisory note.
 
-**Per-stock history** (`GET /holdings/history/:symbol` → `StockHistory`): one stock's live quote +
-daily-close series (`QuoteService.fetchHistory(symbol, canadian)`; TMX for Canadian, Nasdaq for US,
-cached ~6h, native currency — no FX). Powers the **stock detail page** (route `/portfolio/:symbol`,
-`pages/StockPage.tsx`): clicking any holding **or** watchlist row opens it. It shows the ticker · name ·
-live price + day change (native currency), the **`StockHistoryChart`** (`components/StockHistoryChart.tsx`
-— hand-built inline SVG price line, range selector `1W 1M 3M 6M YTD 1Y ALL`, hover tooltip, and a
-graceful "history unavailable" state when `points` is empty), and either a
-**position summary** (shares · avg cost · market value · total return · weight) with **Edit** (the
-`HoldingDialog`) for an owned stock, or **Add to holdings** / **Add-to-/Remove-from-watchlist** actions
-for one you don't own. (There is **no** portfolio-wide performance graph — removed in favor of this
-per-stock view.)
+**Per-stock history** (`GET /holdings/history/:symbol?days=N` → `StockHistory`): one stock's live
+quote + daily-close series (`QuoteService.fetchHistory(symbol, canadian)`; TMX for Canadian, Nasdaq/Cboe
+for US, cached ~6h, native currency — no FX); `?days` trims the series server-side (sparklines request
+30; `lib/trends.ts` re-trims client-side so the "30d" label holds even against a stale server). Powers
+the **stock detail page** (route `/portfolio/:symbol`, `pages/StockPage.tsx`): clicking any
+holding/watchlist/discover row opens it — it works for **any** symbol, owned or not. Layout is a
+**chart + rail grid** (`.stock-grid`, collapsing to one column under ~1020px): the left column holds the
+**`StockHistoryChart`** (hand-built inline SVG price line, range selector `1W 1M 3M 6M YTD 1Y ALL`,
+hover tooltip, graceful empty state), a **period-returns strip** (1W/1M/3M/6M/YTD/1Y/All computed
+client-side from the closes; windows older than the data show "—"), and — when the holding has lots —
+a read-only **Transactions** table (buy/sell chips, per-lot totals, "Manage" opens `HoldingDialog`).
+The right rail stacks fact cards: **Your position** (shares · avg cost · book cost · market value ·
+unrealized/realized/total return · weight, plus Edit/Watch actions, supporting-document link and notes)
+or a **"Not in your portfolio"** CTA card (Add to holdings / Watch), and **Statistics** (previous
+close, today, 52-week low/high with a **range meter** marking where today's price sits). (There is
+**no** portfolio-wide performance graph — removed in favor of this per-stock view.)
+
+**Market discovery** (`services/MarketService.ts`, `routes/market.ts` at `/api/market`, no key, cached,
+failure-tolerant — outages degrade to empty lists): **ticker search** (`searchSymbols`: Nasdaq
+autocomplete for US stocks/ETFs + the TSX company directory for Canadian, results ".TO"-suffixed so the
+quote chain routes to TMX and never collides with a same-lettered US listing; exact-symbol matches float
+first; Nasdaq's share-class name boilerplate is stripped by `cleanName`), a **sector screener**
+(`screenSector`, Nasdaq's public screener, 11 validated sector tokens, market-cap order) and **movers**
+(`marketMovers`: most active by dollar volume / gainers / losers — beware Nasdaq overloads the `change`
+column, so percent is only trusted when the string contains "%"). Client surfaces: 
+**`components/TickerSearch.tsx`** — a debounced combobox (arrow keys + Enter; Enter with no selection
+falls through to the raw ticker) used for the **watchlist add** on `/portfolio` and the hero search on
+Discover; **`components/MarketExplorer.tsx`** — the movers/sector-chip panel + table with per-row
+**quick-watch toggles** (host passes `watchedSymbols` + `onToggleWatch` so its own watchlist UI stays in
+step) hosted **full-size on `/discover`** (`pages/DiscoverPage.tsx` — no sidebar entry by choice; the
+route is reached via the portfolio embed's "Open Discover" links) and **embedded compactly (8 rows) at
+the bottom of `/portfolio`**, so research lives one scroll below the holdings. Every discovery row
+navigates to `/portfolio/:symbol`.
 
 **Watchlist** (`watchlist` table; `routes/watchlist.ts` mounted at `/api/watchlist`): stocks you follow
 but don't own. `GET /watchlist` returns items enriched with live quotes (native currency, day change);
 `POST /watchlist { symbol }` is idempotent (returns the existing item on a duplicate symbol);
-`DELETE /watchlist/:id`. Surfaced as a **section below the holdings table** on `/portfolio` — an
-add-ticker input and a compact table (symbol · price · today), rows linking to the stock page, each with
-a remove ×. Independent of holdings (no positions).
+`DELETE /watchlist/:id`. Surfaced as a **section below the holdings table** on `/portfolio` — a
+`TickerSearch` typeahead to add (suggestions as you type; Enter falls back to the raw ticker) and a
+compact table (symbol · 30d sparkline · price · today), rows linking to the stock page, each with a
+remove ×. Independent of holdings (no positions).
 
 **UI** (`pages/PortfolioPage.tsx`, `components/HoldingDialog.tsx`): the page fetches its
-`PortfolioSnapshot` + watchlist. It shows a four-tile strip (**Book cost / Market value / Today (day $ +
-%) / Total return ($ incl. realized + %)**, gain colored green/red), an advisory banner when
-`quotesLive`/`fxLive` is false, and a dense holdings table with columns **Shares · Avg cost · Current ·
-Book cost · Market value · Weight · Today · Total return** (per-row money in the holding's **native
-currency** with a currency tag by the ticker; `MANUAL` tags, an `N lots` badge, a paperclip on linked
-rows; tiles + `tfoot` totals in the **base currency**). A header **base-currency selector** (persisted,
-default CAD) re-fetches on change. **Clicking a holding row navigates to its stock page** (not the
-dialog); the **Add holding** button opens `HoldingDialog` for a new position (it has a **Currency**
-field auto-detected from the quote, a hint to use exchange-suffixed tickers for non-US listings, and —
-when editing — a **Transactions**/`LotsEditor` section). Leave the current-price field blank to
-auto-fetch or set it to override; the same search-popover the ledgers/chat use attaches a supporting
-document. Deleting a document nulls any holding link inside `removeDocument`'s transaction (alongside the
-ledger links), so it dangles harmlessly.
+`PortfolioSnapshot` + watchlist. Top-down it shows: a four-tile KPI strip with colored accent stripes
+(**Market value / Today (day $ + %) / Total return ($ incl. realized + %) / Book cost**, gain colored
+green/red, market value first); advisory banners when `quotesLive`/`fxLive` is false; an **allocation
+panel** (shown at ≥2 priced holdings) — a segmented share-of-total bar + per-slice rows built on the
+shared **`components/Breakdown.tsx`** (extracted from the ledger's cost breakdowns), with
+**by-holding / by-currency tabs** (currency tab only when >1 native currency), the **top 8** slices
+hued in `ALLOC_COLORS` (a fixed CVD-validated ordering of the shared `COLOR_PALETTE` — the raw cycle
+fails adjacent-pair checks) and the tail folded into a gray **"Other"**, holding rows clicking through
+to the stock page; then the dense holdings table. Table columns — **Shares · Avg cost · Current · 30d ·
+Book cost · Market value · Weight · Today · Total return** — have **click-to-sort headers**
+(client-side; money columns open biggest-first; cross-currency columns sort on the base-converted or
+percentage figure; unpriced rows sink; default sort market-value-desc). The **30d column** renders a
+per-row **`components/Sparkline.tsx`** (tiny direction-colored SVG) fed by **`lib/trends.ts`** — a
+`useTrends` hook that lazily fetches `GET /holdings/history/:symbol?days=30` (4-at-a-time concurrency,
+session-cached per symbol, failures cache as empty) for holdings **and** watchlist rows. Per-row money
+stays in the holding's **native currency** (currency tag by the ticker; `MANUAL` tags, an `N lots`
+badge, a paperclip on linked rows); tiles + `tfoot` totals are in the **base currency**. A header
+**base-currency selector** (persisted, default CAD) re-fetches on change. Shared signed-money/percent
+and gain-color helpers live in **`lib/gains.ts`** (used by the page, `StockPage`, and
+`StockHistoryChart` — don't re-inline them). **Clicking a holding row navigates to its stock page**
+(not the dialog); the **Add holding** button opens `HoldingDialog` for a new position (it has a
+**Currency** field auto-detected from the quote, a hint to use exchange-suffixed tickers for non-US
+listings, and — when editing — a **Transactions**/`LotsEditor` section). Leave the current-price field
+blank to auto-fetch or set it to override; the same search-popover the ledgers/chat use attaches a
+supporting document. Deleting a document nulls any holding link inside `removeDocument`'s transaction
+(alongside the ledger links), so it dangles harmlessly.
 
 ## 4. Categories ("drawers")
 
@@ -698,7 +743,7 @@ Components call API functions from `api.ts` directly and then `refresh()`.
 | `DELETE /projects/:id/items/:itemId`             | delete a line item                                                                                                   |
 | `GET /projects/by-document/:docId`               | line items linking a given document (the document → ledger direction)                                                |
 | `GET /holdings?base=CAD`                         | the whole portfolio: holdings (native currency) + returns from lots, plus rollups converted to `base` (`PortfolioSnapshot`; default base USD) |
-| `GET /holdings/history/:symbol`                  | one stock's live quote + daily-close series (`StockHistory`, native currency; declared before `/:id`); empty `points` w/o history |
+| `GET /holdings/history/:symbol?days=N`           | one stock's live quote + daily-close series (`StockHistory`, native currency; declared before `/:id`); `?days` trims to the last N calendar days (sparklines); empty `points` w/o history |
 | `POST /holdings`                                 | add a holding `{ symbol, name?, shares?, buyPrice?, manualPrice?, documentId?, notes? }` (400 without a symbol)       |
 | `PATCH /holdings/:id`                            | partial-update a holding (`documentId: null` clears the link)                                                        |
 | `DELETE /holdings/:id`                           | delete a holding (and its lots)                                                                                      |
@@ -709,6 +754,9 @@ Components call API functions from `api.ts` directly and then `refresh()`.
 | `GET /watchlist`                                 | watched stocks enriched with live quotes (`WatchlistItemWithQuote[]`, native currency)                              |
 | `POST /watchlist`                                | add a watched symbol `{ symbol, name?, notes? }` (idempotent — returns the existing item on a duplicate)            |
 | `DELETE /watchlist/:id`                          | remove a watched stock                                                                                             |
+| `GET /market/search?q=`                          | ticker/company typeahead → `SymbolSuggestion[]` (US via Nasdaq autocomplete, Canadian via TSX directory, ".TO"-suffixed; empty on outage) |
+| `GET /market/screener?sector=technology`         | top-of-sector US stocks by market cap → `ScreenerRow[]` (11 sector tokens; `GET /market/sectors` lists them)       |
+| `GET /market/movers?kind=active\|gainers\|losers`| today's US movers → `ScreenerRow[]`                                                                                |
 
 ## 7. Where it's headed
 

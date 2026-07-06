@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from 'react';
 import { HistoryDay } from '@stashd/shared';
 import { formatMoney, formatDate } from '../lib/format';
+import { signedAmount as signedMoney, signedPct } from '../lib/gains';
 
 // Hand-built inline SVG price chart for a single stock (paper aesthetic, no chart
 // lib). Plots daily closes with a range selector; the selected range's change is
@@ -36,15 +37,6 @@ function cutoff(range: Range): string | null {
     case 'all': return null;
   }
   return d.toISOString().slice(0, 10);
-}
-
-function signedPct(v: number): string {
-  const sign = v > 0 ? '+' : v < 0 ? '−' : '';
-  return `${sign}${(Math.abs(v) * 100).toFixed(2)}%`;
-}
-function signedMoney(v: number, currency: string): string {
-  const sign = v > 0 ? '+' : v < 0 ? '−' : '';
-  return `${sign}${formatMoney(Math.abs(v), currency)}`;
 }
 
 export default function StockHistoryChart({ points, currency }: { points: HistoryDay[]; currency: string }) {

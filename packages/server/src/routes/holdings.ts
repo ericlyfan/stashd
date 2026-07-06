@@ -311,15 +311,22 @@ export function createHoldingRoutes(services: Services): Router {
   // GET /api/holdings/history/:symbol — one stock's daily closes + live quote,
   // for the stock detail page. Declared before "/:id" routes so "history" isn't
   // parsed as a holding id. Single-currency (the stock's native currency).
+  // ?days=N trims the series to the last N calendar days (sparklines don't need
+  // two decades of closes per symbol).
   router.get('/history/:symbol', async (req, res) => {
     const symbol = req.params.symbol.trim().toUpperCase();
     if (!symbol) return res.status(400).json({ error: 'A symbol is required' });
+    const days = Number(req.query.days);
 
     const quotes = await fetchQuotes([symbol]);
     const quote = quotes.get(symbol);
     const currency = quote?.currency ?? 'USD';
     // Route history by the resolved quote currency (never guessed → no CDR mixups).
-    const points = await fetchHistory(symbol, currency === 'CAD');
+    let points = await fetchHistory(symbol, currency === 'CAD');
+    if (Number.isFinite(days) && days > 0) {
+      const cutoff = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
+      points = points.filter(p => p.date >= cutoff);
+    }
     // Historical closes can lag a day or two behind the live quote; end the
     // series on today's live price so the chart agrees with the header.
     const today = new Date().toISOString().slice(0, 10);

@@ -1,33 +1,76 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Eye, Paperclip, Plus, RefreshCw, TrendingUp, X } from 'lucide-react';
-import { HoldingInput, HoldingWithQuote, PortfolioSnapshot, WatchlistItemWithQuote } from '@stashd/shared';
+import { ArrowDown, ArrowUp, Coins, Compass, Eye, Paperclip, PieChart, Plus, RefreshCw, TrendingUp, X } from 'lucide-react';
+import { HoldingInput, HoldingWithQuote, PortfolioSnapshot, ScreenerRow, WatchlistItemWithQuote } from '@stashd/shared';
 import { addWatchlist, createHolding, deleteHolding, getPortfolio, getWatchlist, removeWatchlist, updateHolding } from '../api';
 import { useStore } from '../store';
 import HoldingDialog from '../components/HoldingDialog';
 import EmptyState from '../components/EmptyState';
+import Breakdown, { BreakdownRow } from '../components/Breakdown';
+import Sparkline from '../components/Sparkline';
+import TickerSearch from '../components/TickerSearch';
+import MarketExplorer from '../components/MarketExplorer';
+import { useTrends } from '../lib/trends';
 import { formatMoney, formatMoneyCell, relTime } from '../lib/format';
+import { gainClass, signedAmount, signedPct } from '../lib/gains';
 
 const CURRENCIES = ['CAD', 'USD', 'EUR', 'GBP', 'AUD', 'JPY'];
 const BASE_KEY = 'stashd.portfolioBase';
 
-// Signed money in a given currency, e.g. "+$1,240.00" / "−C$310.50".
-function signedAmount(v: number | undefined, currency: string): string {
-  if (v === undefined || v === null) return '—';
-  const sign = v > 0 ? '+' : v < 0 ? '−' : '';
-  return `${sign}${formatMoney(Math.abs(v), currency)}`;
+// Allocation-segment hues: a fixed, CVD-validated ordering drawn from the
+// app's shared COLOR_PALETTE (the raw cycle fails adjacent-pair separation).
+// The tail past 8 holdings folds into a gray "Other" — never a 9th hue.
+const ALLOC_COLORS = ['#6366f1', '#f59e0b', '#0d9488', '#ef4444', '#3b82f6', '#ec4899', '#10b981', '#f97316'];
+const OTHER_COLOR = '#64748b';
+const ALLOC_MAX = 8;
+
+// ── Holdings-table sorting ───────────────────────────────────────────────────
+// Cross-currency columns sort on the base-converted / percentage figure so a
+// mixed CAD+USD table orders sensibly; single-holding figures sort natively.
+type SortKey = 'symbol' | 'shares' | 'avgCost' | 'price' | 'costBasis' | 'value' | 'weight' | 'day' | 'return';
+
+function sortValue(h: HoldingWithQuote, k: SortKey): string | number | undefined {
+  switch (k) {
+    case 'symbol': return h.symbol;
+    case 'shares': return h.shares;
+    case 'avgCost': return h.avgCost;
+    case 'price': return h.currentPrice;
+    case 'costBasis': return h.costBasis * h.fxToBase;
+    case 'value': return h.marketValueBase;
+    case 'weight': return h.weight;
+    case 'day': return h.dayChangePct;
+    case 'return': return h.totalReturnPct;
+  }
 }
 
-function signedPct(v?: number): string {
-  if (v === undefined || v === null) return '';
-  const sign = v > 0 ? '+' : v < 0 ? '−' : '';
-  return `${sign}${(Math.abs(v) * 100).toFixed(2)}%`;
+function compareHoldings(a: HoldingWithQuote, b: HoldingWithQuote, key: SortKey, dir: 1 | -1): number {
+  const va = sortValue(a, key);
+  const vb = sortValue(b, key);
+  if (va === undefined && vb === undefined) return a.symbol.localeCompare(b.symbol);
+  if (va === undefined) return 1; // unknowns sink to the bottom either way
+  if (vb === undefined) return -1;
+  const cmp = typeof va === 'string' ? va.localeCompare(vb as string) : (va as number) - (vb as number);
+  return cmp * dir;
 }
 
-// Green for a gain, red for a loss, neutral for flat/unknown.
-function gainClass(v?: number): string {
-  if (v === undefined || v === null || v === 0) return '';
-  return v > 0 ? 'gain-pos' : 'gain-neg';
+function SortTh({
+  label, k, sort, onSort, numeric,
+}: {
+  label: string;
+  k: SortKey;
+  sort: { key: SortKey; dir: 1 | -1 };
+  onSort: (k: SortKey) => void;
+  numeric?: boolean;
+}) {
+  const active = sort.key === k;
+  return (
+    <th className={numeric ? 'num-col' : undefined} aria-sort={active ? (sort.dir === 1 ? 'ascending' : 'descending') : undefined}>
+      <button className={`th-sort${active ? ' active' : ''}`} onClick={() => onSort(k)}>
+        {label}
+        {active && (sort.dir === 1 ? <ArrowUp size={10} /> : <ArrowDown size={10} />)}
+      </button>
+    </th>
+  );
 }
 
 export default function PortfolioPage() {
@@ -41,9 +84,10 @@ export default function PortfolioPage() {
   const [editing, setEditing] = useState<HoldingWithQuote | null>(null);
   const [adding, setAdding] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [watchSymbol, setWatchSymbol] = useState('');
   // The currency the totals are shown in; per-holding rows stay native.
   const [base, setBase] = useState(() => localStorage.getItem(BASE_KEY) || 'CAD');
+  // Symbol keys, not display order: money columns open biggest-first.
+  const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: 'value', dir: -1 });
 
   const load = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
@@ -61,12 +105,12 @@ export default function PortfolioPage() {
 
   const openStock = (symbol: string) => navigate(`/portfolio/${encodeURIComponent(symbol)}`);
 
-  async function addWatch() {
-    const s = watchSymbol.trim().toUpperCase();
+  async function addWatch(symbol: string, name?: string) {
+    const s = symbol.trim().toUpperCase();
     if (!s) return;
     try {
-      await addWatchlist({ symbol: s });
-      setWatchSymbol('');
+      await addWatchlist({ symbol: s, name });
+      notify(`Watching ${s}`);
       await load();
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Could not add to watchlist', 'err');
@@ -82,6 +126,20 @@ export default function PortfolioPage() {
     }
   }
 
+  // Watch/unwatch from the embedded Discover table; the watchlist section
+  // above shares the same state, so it updates in step.
+  async function toggleWatchRow(row: ScreenerRow, watched: boolean) {
+    const rowSym = row.symbol.trim().toUpperCase();
+    if (watched) {
+      const existing = watchlist.find(w => w.symbol.trim().toUpperCase() === rowSym);
+      if (!existing) return;
+      await removeWatch(existing.id);
+      notify(`Stopped watching ${rowSym}`);
+    } else {
+      await addWatch(rowSym, row.name);
+    }
+  }
+
   useEffect(() => {
     load();
   }, [load]);
@@ -89,6 +147,14 @@ export default function PortfolioPage() {
   function changeBase(next: string) {
     setBase(next);
     localStorage.setItem(BASE_KEY, next);
+  }
+
+  function toggleSort(key: SortKey) {
+    setSort(cur =>
+      cur.key === key
+        ? { key, dir: cur.dir === 1 ? -1 : 1 }
+        : { key, dir: key === 'symbol' ? 1 : -1 },
+    );
   }
 
   async function save(input: HoldingInput) {
@@ -122,6 +188,64 @@ export default function PortfolioPage() {
     }
   }
 
+  const holdings = snap?.holdings ?? [];
+  const totals = snap?.totals;
+
+  const sorted = useMemo(
+    () => [...holdings].sort((a, b) => compareHoldings(a, b, sort.key, sort.dir)),
+    [holdings, sort],
+  );
+
+  // 30-day sparklines for every visible symbol, fetched lazily after render.
+  const trendSymbols = useMemo(
+    () => [...holdings.map(h => h.symbol), ...watchlist.map(w => w.symbol)],
+    [holdings, watchlist],
+  );
+  const trends = useTrends(trendSymbols);
+
+  const watchedSymbols = useMemo(
+    () => new Set(watchlist.map(w => w.symbol.trim().toUpperCase())),
+    [watchlist],
+  );
+
+  // Allocation: priced holdings by base market value, top slices + a gray
+  // "Other" fold (never more than 8 hues), plus a by-currency cut when the
+  // portfolio actually spans currencies.
+  const allocation = useMemo(() => {
+    const priced = holdings
+      .filter(h => (h.marketValueBase ?? 0) > 0)
+      .sort((a, b) => b.marketValueBase! - a.marketValueBase!);
+    const total = priced.reduce((s, h) => s + h.marketValueBase!, 0);
+
+    const top = priced.slice(0, ALLOC_MAX);
+    const rest = priced.slice(ALLOC_MAX);
+    const byHolding: BreakdownRow[] = top.map(h => ({
+      id: h.symbol,
+      label: h.symbol,
+      sub: h.name,
+      total: h.marketValueBase!,
+    }));
+    if (rest.length > 0) {
+      byHolding.push({
+        label: `Other (${rest.length})`,
+        total: rest.reduce((s, h) => s + h.marketValueBase!, 0),
+        color: OTHER_COLOR,
+      });
+    }
+
+    const ccyMap = new Map<string, number>();
+    for (const h of priced) ccyMap.set(h.currency, (ccyMap.get(h.currency) ?? 0) + h.marketValueBase!);
+    const byCurrency: BreakdownRow[] = [...ccyMap.entries()]
+      .map(([label, tot]) => ({ label, total: tot }))
+      .sort((a, b) => b.total - a.total);
+
+    return { byHolding, byCurrency, total, pricedCount: priced.length };
+  }, [holdings]);
+
+  const [allocTab, setAllocTab] = useState<'holding' | 'currency'>('holding');
+  const showCurrencyTab = allocation.byCurrency.length > 1;
+  const activeAllocTab = allocTab === 'currency' && showCurrencyTab ? 'currency' : 'holding';
+
   if (loading) {
     return (
       <div className="page">
@@ -129,9 +253,6 @@ export default function PortfolioPage() {
       </div>
     );
   }
-
-  const holdings = snap?.holdings ?? [];
-  const totals = snap?.totals;
 
   return (
     <div className="page" style={{ maxWidth: 'none' }}>
@@ -144,7 +265,7 @@ export default function PortfolioPage() {
           <h1 className="page-title">Stock <em>holdings</em></h1>
           <div style={{ flex: 1 }} />
           {holdings.length > 0 && (
-            <label className="base-picker" title="Currency for the totals and chart">
+            <label className="base-picker" title="Currency for the totals and allocation">
               <span>Base</span>
               <select value={base} onChange={e => changeBase(e.target.value)}>
                 {CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
@@ -163,9 +284,8 @@ export default function PortfolioPage() {
           </button>
         </div>
         <p className="page-sub">
-          Track what you own, what you paid, and what it’s worth now. Current prices are fetched
-          live from the market; leave a holding’s current price blank to auto-fetch, or set it by
-          hand when you’d rather.
+          What you own, what you paid, and what it’s worth now — priced live from the market, with
+          totals in your base currency.
         </p>
       </header>
 
@@ -185,14 +305,15 @@ export default function PortfolioPage() {
       ) : (
         <>
           {totals && (
-            <div className="stats rise rise-1" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
-              <div className="stat" style={{ ['--accent' as never]: '#3b82f6' }}>
-                <div className="num">{formatMoneyCell(totals.costBasis, base)}</div>
-                <div className="lbl">Book cost</div>
-              </div>
+            <div className="stats portfolio-stats rise rise-1" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
               <div className="stat" style={{ ['--accent' as never]: 'var(--wax)' }}>
                 <div className="num">{formatMoneyCell(totals.marketValue, base)}</div>
-                <div className="lbl">Market value</div>
+                <div className="lbl">
+                  Market value · {base}
+                  {totals.pricedCount < totals.holdingCount && (
+                    <span className="stat-sub">{totals.pricedCount}/{totals.holdingCount} priced</span>
+                  )}
+                </div>
               </div>
               <div className="stat" style={{ ['--accent' as never]: totals.dayChange >= 0 ? 'var(--moss)' : '#c0392b' }}>
                 <div className={`num ${gainClass(totals.dayChange)}`}>{signedAmount(totals.dayChange, base)}</div>
@@ -206,6 +327,10 @@ export default function PortfolioPage() {
                     <span className="stat-sub"> · {signedAmount(totals.realizedGain, base)} realized</span>
                   )}
                 </div>
+              </div>
+              <div className="stat" style={{ ['--accent' as never]: '#3b82f6' }}>
+                <div className="num">{formatMoneyCell(totals.costBasis, base)}</div>
+                <div className="lbl">Book cost</div>
               </div>
             </div>
           )}
@@ -225,23 +350,66 @@ export default function PortfolioPage() {
             </div>
           )}
 
+          {allocation.pricedCount >= 2 && (
+            <div className="breakdown breakdown-panel alloc rise rise-2">
+              <div className="breakdown-tabs">
+                <div className="breakdown-tablist" role="tablist">
+                  <button
+                    role="tab"
+                    aria-selected={activeAllocTab === 'holding'}
+                    className={`breakdown-tab${activeAllocTab === 'holding' ? ' active' : ''}`}
+                    onClick={() => setAllocTab('holding')}
+                  >
+                    <PieChart size={12} />
+                    Allocation
+                  </button>
+                  {showCurrencyTab && (
+                    <button
+                      role="tab"
+                      aria-selected={activeAllocTab === 'currency'}
+                      className={`breakdown-tab${activeAllocTab === 'currency' ? ' active' : ''}`}
+                      onClick={() => setAllocTab('currency')}
+                    >
+                      <Coins size={12} />
+                      By currency
+                    </button>
+                  )}
+                </div>
+                <span className="breakdown-total">{formatMoney(allocation.total, base)}</span>
+              </div>
+              <Breakdown
+                rows={activeAllocTab === 'currency' ? allocation.byCurrency : allocation.byHolding}
+                grandTotal={allocation.total}
+                formatValue={v => formatMoney(v, base)}
+                colors={ALLOC_COLORS}
+                onRowClick={activeAllocTab === 'holding' ? row => row.id && openStock(row.id) : undefined}
+              />
+              {totals && totals.pricedCount < totals.holdingCount && (
+                <div className="alloc-note">
+                  {totals.holdingCount - totals.pricedCount} unpriced {totals.holdingCount - totals.pricedCount === 1 ? 'holding isn’t' : 'holdings aren’t'} included.
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="li-table-wrap rise rise-2">
-            <table className="li-table">
+            <table className="li-table holdings-table">
               <thead>
                 <tr>
-                  <th>Symbol</th>
-                  <th className="num-col">Shares</th>
-                  <th className="num-col">Avg cost</th>
-                  <th className="num-col">Current</th>
-                  <th className="num-col">Book cost</th>
-                  <th className="num-col">Market value</th>
-                  <th className="num-col">Weight</th>
-                  <th className="num-col">Today</th>
-                  <th className="num-col">Total return</th>
+                  <SortTh label="Symbol" k="symbol" sort={sort} onSort={toggleSort} />
+                  <SortTh label="Shares" k="shares" sort={sort} onSort={toggleSort} numeric />
+                  <SortTh label="Avg cost" k="avgCost" sort={sort} onSort={toggleSort} numeric />
+                  <SortTh label="Current" k="price" sort={sort} onSort={toggleSort} numeric />
+                  <th className="spark-col">30d</th>
+                  <SortTh label="Book cost" k="costBasis" sort={sort} onSort={toggleSort} numeric />
+                  <SortTh label="Market value" k="value" sort={sort} onSort={toggleSort} numeric />
+                  <SortTh label="Weight" k="weight" sort={sort} onSort={toggleSort} numeric />
+                  <SortTh label="Today" k="day" sort={sort} onSort={toggleSort} numeric />
+                  <SortTh label="Total return" k="return" sort={sort} onSort={toggleSort} numeric />
                 </tr>
               </thead>
               <tbody>
-                {holdings.map(h => (
+                {sorted.map(h => (
                   <tr
                     key={h.id}
                     onClick={() => openStock(h.symbol)}
@@ -282,6 +450,9 @@ export default function PortfolioPage() {
                         <span className="li-empty">—</span>
                       )}
                     </td>
+                    <td className="spark-col">
+                      <Sparkline points={trends.get(h.symbol.trim().toUpperCase())} />
+                    </td>
                     <td className="num-col">{formatMoneyCell(h.costBasis, h.currency)}</td>
                     <td className="num-col">{h.marketValue !== undefined ? formatMoney(h.marketValue, h.currency) : <span className="li-empty">—</span>}</td>
                     <td className="num-col">{h.weight !== undefined ? `${(h.weight * 100).toFixed(1)}%` : <span className="li-empty">—</span>}</td>
@@ -310,7 +481,7 @@ export default function PortfolioPage() {
               </tbody>
               <tfoot>
                 <tr>
-                  <td colSpan={4}>
+                  <td colSpan={5}>
                     {holdings.length} {holdings.length === 1 ? 'holding' : 'holdings'}
                     <span className="tf-base" title="Totals converted to your base currency">· in {base}</span>
                   </td>
@@ -343,17 +514,11 @@ export default function PortfolioPage() {
             Watchlist
           </div>
           <div className="watchlist-add">
-            <input
-              className="input"
-              value={watchSymbol}
-              placeholder="Add a ticker (e.g. TSLA, SHOP.TO)"
-              style={{ textTransform: 'uppercase' }}
-              onChange={e => setWatchSymbol(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && addWatch()}
+            <TickerSearch
+              placeholder="Search a ticker or company to watch…"
+              onSelect={s => addWatch(s.symbol, s.name)}
+              onSubmitRaw={sym => addWatch(sym)}
             />
-            <button className="btn btn-sm btn-primary" onClick={addWatch} disabled={!watchSymbol.trim()}>
-              <Plus size={13} /> Watch
-            </button>
           </div>
         </div>
 
@@ -367,6 +532,7 @@ export default function PortfolioPage() {
               <thead>
                 <tr>
                   <th>Symbol</th>
+                  <th className="spark-col">30d</th>
                   <th className="num-col">Price</th>
                   <th className="num-col">Today</th>
                   <th style={{ width: 34 }}></th>
@@ -386,6 +552,9 @@ export default function PortfolioPage() {
                         {w.currency && <span className="h-ccy">{w.currency}</span>}
                         {w.name && <span className="h-name">{w.name}</span>}
                       </div>
+                    </td>
+                    <td className="spark-col">
+                      <Sparkline points={trends.get(w.symbol.trim().toUpperCase())} />
                     </td>
                     <td className="num-col">
                       {w.currentPrice !== undefined ? formatMoney(w.currentPrice, w.currency ?? 'USD') : <span className="li-empty">—</span>}
@@ -419,6 +588,27 @@ export default function PortfolioPage() {
             </table>
           </div>
         )}
+      </section>
+
+      {/* Discover — research beyond what you own, right here on the portfolio:
+          look up any ticker, browse today's movers or a sector's biggest names. */}
+      <section className="discover-embed rise rise-3">
+        <div className="watchlist-head">
+          <div className="page-eyebrow" style={{ margin: 0 }}>
+            <Compass size={12} style={{ verticalAlign: '-1px', marginRight: 7 }} />
+            Discover
+          </div>
+          <TickerSearch
+            placeholder="Look up any ticker or company…"
+            onSelect={s => openStock(s.symbol)}
+            onSubmitRaw={openStock}
+          />
+        </div>
+        <MarketExplorer
+          watchedSymbols={watchedSymbols}
+          onToggleWatch={toggleWatchRow}
+          onOpenStock={openStock}
+        />
       </section>
 
       {(adding || editing) && (

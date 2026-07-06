@@ -13,8 +13,11 @@ import {
   HoldingLotInput,
   LineItem,
   LineItemInput,
+  MoversKind,
   PortfolioSnapshot,
+  ScreenerRow,
   StockHistory,
+  SymbolSuggestion,
   WatchlistItem,
   WatchlistItemInput,
   WatchlistItemWithQuote,
@@ -379,8 +382,26 @@ export function deleteHolding(id: string): Promise<void> {
 }
 
 // One stock's daily close history + live quote, for the stock detail page.
-export function getStockHistory(symbol: string): Promise<StockHistory> {
-  return req<StockHistory>(`/holdings/history/${encodeURIComponent(symbol)}`);
+// `days` trims the series server-side (sparklines only need a short window).
+export function getStockHistory(symbol: string, days?: number): Promise<StockHistory> {
+  return req<StockHistory>(`/holdings/history/${encodeURIComponent(symbol)}${days ? `?days=${days}` : ''}`);
+}
+
+// ── Market discovery ─────────────────────────────────────────────────────────
+// Ticker typeahead: merged US (Nasdaq) + Canadian (TSX, ".TO"-suffixed)
+// suggestions. Empty on outage — never an error.
+export function searchSymbols(q: string): Promise<SymbolSuggestion[]> {
+  return req<SymbolSuggestion[]>(`/market/search?q=${encodeURIComponent(q)}`);
+}
+
+// Top-of-sector stocks (US, market-cap order).
+export function getSectorScreener(sector: string): Promise<ScreenerRow[]> {
+  return req<ScreenerRow[]>(`/market/screener?sector=${encodeURIComponent(sector)}`);
+}
+
+// Today's US movers.
+export function getMarketMovers(kind: MoversKind): Promise<ScreenerRow[]> {
+  return req<ScreenerRow[]>(`/market/movers?kind=${kind}`);
 }
 
 // ── Watchlist ────────────────────────────────────────────────────────────────

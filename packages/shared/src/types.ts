@@ -428,6 +428,34 @@ export interface WatchlistItemWithQuote extends WatchlistItem {
   priceSource: PriceSource;
 }
 
+// ── Market discovery ─────────────────────────────────────────────────────────
+// Ticker search + sector/mover screeners, no API key (Nasdaq public APIs for
+// US, the TSX company directory for Canadian). All failure-tolerant: an
+// unreachable source degrades to fewer/no rows, never an error.
+
+// One ticker-search suggestion. `symbol` is directly usable by the rest of the
+// app (Canadian results carry their ".TO" suffix so the quote chain routes to
+// TMX instead of colliding with a same-lettered US listing).
+export interface SymbolSuggestion {
+  symbol: string;
+  name: string;
+  exchange?: string;
+  country: "US" | "CA";
+  asset?: string; // e.g. STOCKS | ETF
+}
+
+// One row of a discovery table (sector screener or market movers). US-only,
+// USD. `changePct` is a fraction (0.0484 = +4.84%).
+export interface ScreenerRow {
+  symbol: string;
+  name: string;
+  price?: number;
+  changePct?: number;
+  marketCap?: number;
+}
+
+export type MoversKind = "active" | "gainers" | "losers";
+
 // Fields a client may set on a holding; the server owns id / timestamps.
 // `documentId: null` explicitly clears the link.
 export interface HoldingInput {

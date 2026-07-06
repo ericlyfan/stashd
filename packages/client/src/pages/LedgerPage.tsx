@@ -16,7 +16,7 @@ import ProjectDialog from '../components/ProjectDialog';
 import ConfirmDialog from '../components/ConfirmDialog';
 import EmptyState from '../components/EmptyState';
 import SpendTimeline from '../components/SpendTimeline';
-import { CATEGORY_COLORS } from '../lib/categoryMeta';
+import Breakdown from '../components/Breakdown';
 import { formatAmount, formatCell, formatDate } from '../lib/format';
 
 // distinct, trimmed, sorted values of one field across the line items
@@ -491,44 +491,5 @@ function Analytics({
         <Breakdown rows={cur.rows} grandTotal={grandTotal} />
       )}
     </div>
-  );
-}
-
-// Cost-share view: a segmented proportion bar plus one row per slice.
-function Breakdown({ rows, grandTotal }: { rows: { label: string; total: number }[]; grandTotal: number }) {
-  const pct = (v: number) => (grandTotal > 0 ? (v / grandTotal) * 100 : 0);
-
-  // Color each slice by rank (rows arrive sorted high → low), so the biggest
-  // costs get the leading palette hues and the segmented bar reads top-down.
-  const colored = rows.map((r, i) => ({ ...r, color: CATEGORY_COLORS[i % CATEGORY_COLORS.length] }));
-
-  return (
-    <>
-      <div className="breakdown-stack" role="presentation">
-        {colored.map(r => (
-          <span
-            key={r.label}
-            className="breakdown-seg"
-            style={{ width: `${pct(r.total)}%`, background: r.color }}
-            title={`${r.label} · ${formatAmount(r.total)} · ${pct(r.total).toFixed(0)}%`}
-          />
-        ))}
-      </div>
-
-      <div className="breakdown-rows">
-        {colored.map(r => (
-          <div key={r.label} className="breakdown-row">
-            <span
-              className="breakdown-bar"
-              style={{ width: `${Math.max(3, pct(r.total))}%`, background: `color-mix(in srgb, ${r.color} 20%, transparent)` }}
-            />
-            <span className="breakdown-dot" style={{ background: r.color }} />
-            <span className="breakdown-label">{r.label}</span>
-            <span className="breakdown-amount">{formatAmount(r.total)}</span>
-            <span className="breakdown-pct">{pct(r.total).toFixed(0)}%</span>
-          </div>
-        ))}
-      </div>
-    </>
   );
 }
