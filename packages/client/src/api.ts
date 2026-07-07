@@ -14,9 +14,12 @@ import {
   LineItem,
   LineItemInput,
   MoversKind,
+  NewsItem,
   PortfolioSnapshot,
+  PulseItem,
   ScreenerRow,
   StockHistory,
+  StockProfile,
   SymbolSuggestion,
   WatchlistItem,
   WatchlistItemInput,
@@ -394,14 +397,47 @@ export function searchSymbols(q: string): Promise<SymbolSuggestion[]> {
   return req<SymbolSuggestion[]>(`/market/search?q=${encodeURIComponent(q)}`);
 }
 
-// Top-of-sector stocks (US, market-cap order).
-export function getSectorScreener(sector: string): Promise<ScreenerRow[]> {
-  return req<ScreenerRow[]>(`/market/screener?sector=${encodeURIComponent(sector)}`);
+// Top-of-sector stocks (US, market-cap order). `enrich` adds P/E + analyst
+// target upside per row (the value screen; first hit is slower, then cached).
+export function getSectorScreener(sector: string, enrich = false): Promise<ScreenerRow[]> {
+  return req<ScreenerRow[]>(`/market/screener?sector=${encodeURIComponent(sector)}${enrich ? '&enrich=1' : ''}`);
+}
+
+// Insider open-market activity (US symbols; null for Canadian/no filings).
+export function getInsiderActivity(symbol: string): Promise<InsiderActivity | null> {
+  return req<InsiderActivity | null>(`/market/insiders/${encodeURIComponent(symbol)}`);
+}
+
+// The portfolio risk & health report: risk stats vs SPY, correlation and
+// concentration warnings, and heuristic rebalancing suggestions.
+export function getPortfolioHealth(base?: string): Promise<PortfolioHealth> {
+  return req<PortfolioHealth>(`/holdings/health${base ? `?base=${encodeURIComponent(base)}` : ''}`);
 }
 
 // Today's US movers.
 export function getMarketMovers(kind: MoversKind): Promise<ScreenerRow[]> {
   return req<ScreenerRow[]>(`/market/movers?kind=${kind}`);
+}
+
+// Index-proxy tiles for the Discover pulse strip.
+export function getMarketPulse(): Promise<PulseItem[]> {
+  return req<PulseItem[]>('/market/pulse');
+}
+
+// The curated popular-ETFs shelf, priced live (US + Canadian).
+export function getPopularEtfs(): Promise<ScreenerRow[]> {
+  return req<ScreenerRow[]>('/market/etfs');
+}
+
+// Fundamentals for one symbol; pass the resolved quote currency so bare
+// Canadian symbols route to TMX.
+export function getStockProfile(symbol: string, ccy?: string): Promise<StockProfile | null> {
+  return req<StockProfile | null>(`/market/profile/${encodeURIComponent(symbol)}${ccy ? `?ccy=${ccy}` : ''}`);
+}
+
+// Recent headlines for one symbol.
+export function getStockNews(symbol: string, ccy?: string): Promise<NewsItem[]> {
+  return req<NewsItem[]>(`/market/news/${encodeURIComponent(symbol)}${ccy ? `?ccy=${ccy}` : ''}`);
 }
 
 // ── Watchlist ────────────────────────────────────────────────────────────────
@@ -419,6 +455,15 @@ export function addWatchlist(input: WatchlistItemInput): Promise<WatchlistItem> 
 
 export function removeWatchlist(id: string): Promise<void> {
   return req<void>(`/watchlist/${id}`, { method: 'DELETE' });
+}
+
+// Edit a watched stock's name / thesis notes / folder ("" clears a field).
+export function updateWatchlist(id: string, input: WatchlistItemInput): Promise<WatchlistItem> {
+  return req<WatchlistItem>(`/watchlist/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
 }
 
 export function listLots(holdingId: string): Promise<HoldingLot[]> {

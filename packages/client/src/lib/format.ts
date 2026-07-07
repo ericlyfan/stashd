@@ -42,6 +42,17 @@ export function formatMoney(amount?: number | null, currency = "USD"): string {
   }
 }
 
+// Compact large figures: 4.71T / 532.1B / 48.2M / 55,922 — for market caps and
+// volumes, where full digits are noise. Prefix with "$" at the call site when
+// it's money.
+export function formatCompact(v?: number | null): string {
+  if (v === undefined || v === null || v <= 0) return "—";
+  if (v >= 1e12) return `${(v / 1e12).toFixed(2)}T`;
+  if (v >= 1e9) return `${(v / 1e9).toFixed(1)}B`;
+  if (v >= 1e6) return `${(v / 1e6).toFixed(1)}M`;
+  return Math.round(v).toLocaleString();
+}
+
 // Money for a dense table cell: an em dash for empty, else formatMoney.
 export function formatMoneyCell(amount?: number | null, currency = "USD"): string {
   if (amount === undefined || amount === null) return "—";

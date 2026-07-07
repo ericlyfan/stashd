@@ -242,6 +242,7 @@ interface WatchlistRow {
   symbol: string;
   name: string | null;
   notes: string | null;
+  folder: string | null;
   created_at: string;
 }
 
@@ -251,6 +252,7 @@ function rowToWatchlistItem(row: WatchlistRow): WatchlistItem {
     symbol: row.symbol,
     name: row.name ?? undefined,
     notes: row.notes ?? undefined,
+    folder: row.folder ?? undefined,
     createdAt: row.created_at,
   };
 }
@@ -303,6 +305,7 @@ export class StoreService {
     this.migrateConversationColumns();
     this.migrateProjectColumns();
     this.migrateDocumentColumns();
+    this.migrateWatchlistColumns();
     this.migrateFromManifest();
     if ((this.db.prepare('SELECT COUNT(*) AS n FROM categories').get() as { n: number }).n === 0) {
       for (const cat of DEFAULT_CATEGORIES) this.addCategory(cat);
@@ -319,6 +322,15 @@ export class StoreService {
     }
     if (!cols.includes('position')) {
       this.db.exec('ALTER TABLE categories ADD COLUMN position INTEGER NOT NULL DEFAULT 0');
+    }
+  }
+
+  // Adds the folder column to watchlists created before grouped watchlists
+  // (folders + thesis notes). Same guarded ALTER pattern as above.
+  private migrateWatchlistColumns(): void {
+    const cols = (this.db.prepare('PRAGMA table_info(watchlist)').all() as { name: string }[]).map(c => c.name);
+    if (!cols.includes('folder')) {
+      this.db.exec('ALTER TABLE watchlist ADD COLUMN folder TEXT');
     }
   }
 
@@ -1446,8 +1458,25 @@ export class StoreService {
 
   addWatchlistItem(item: WatchlistItem): void {
     this.db
-      .prepare('INSERT INTO watchlist (id, symbol, name, notes, created_at) VALUES (?, ?, ?, ?, ?)')
-      .run(item.id, item.symbol, item.name ?? null, item.notes ?? null, item.createdAt);
+      .prepare('INSERT INTO watchlist (id, symbol, name, notes, folder, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(item.id, item.symbol, item.name ?? null, item.notes ?? null, item.folder ?? null, item.createdAt);
+  }
+
+  // Partial update of the editable watchlist fields (name / thesis notes /
+  // folder). Explicit empty strings clear a field.
+  updateWatchlistItem(id: string, input: { name?: string; notes?: string; folder?: string }): WatchlistItem | undefined {
+    const existing = this.getWatchlistItem(id);
+    if (!existing) return undefined;
+    const next: WatchlistItem = {
+      ...existing,
+      name: input.name !== undefined ? input.name || undefined : existing.name,
+      notes: input.notes !== undefined ? input.notes || undefined : existing.notes,
+      folder: input.folder !== undefined ? input.folder || undefined : existing.folder,
+    };
+    this.db
+      .prepare('UPDATE watchlist SET name = ?, notes = ?, folder = ? WHERE id = ?')
+      .run(next.name ?? null, next.notes ?? null, next.folder ?? null, id);
+    return next;
   }
 
   removeWatchlistItem(id: string): boolean {

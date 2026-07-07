@@ -6,16 +6,18 @@ It is the single living document for **Stashd** — both the _operating manual_ 
 verify, and not break things) and the _architecture & feature reference_ (how it all works). Keep this
 file honest and current; it is the project's memory and the first thing agents load.
 
-_Last updated: 2026-07-05 (**portfolio overhaul + market discovery** — `/portfolio` now reads as a
+_Last updated: 2026-07-06 (**Discover expansion + stock-page fill-out**: market-pulse strip, ETFs +
+**Canada (TSX movers)** tabs, Canadian search re-ranking, per-symbol fundamentals + news
+(`/api/market/pulse|etfs|profile|news`), full-width stock detail layout with a heuristic **buy/sell
+Signal card** (`lib/signals.ts`). Prior 2026-07-05: **portfolio overhaul + market discovery** — `/portfolio` now reads as a
 holdings dashboard: **allocation panel** (shared `components/Breakdown.tsx`, top-8 + gray "Other",
 by-holding / by-currency tabs), **sortable holdings columns**, **30-day sparklines**
 (`components/Sparkline.tsx` + `lib/trends.ts`, `GET /holdings/history/:symbol?days=N`), helpers
 deduped into `lib/gains.ts`. **Market discovery** landed the same day: `MarketService` +
 `/api/market/*` (no-key ticker search via Nasdaq autocomplete + TSX directory; US sector screener +
-movers via Nasdaq), a **`TickerSearch` typeahead** (watchlist add + Discover), a **Discover page**
-(`/discover`, reached from the portfolio embed — no sidebar entry) whose movers/sector panel is the
-shared **`MarketExplorer`** — also
-embedded compactly at the bottom of `/portfolio` — and a **redesigned stock detail page** (chart +
+movers via Nasdaq), a **`TickerSearch` typeahead** (watchlist add + ticker lookup), a **Discover
+section on `/portfolio`** (the `MarketExplorer` movers/sector panel — there is no standalone
+Discover page or sidebar entry, by request), and a **redesigned stock detail page** (chart +
 period-returns strip + position/statistics rail with 52-week range meter + transactions table))_
 
 > **How this file is organized.** Part I is the operating manual — read it first. Part II is the
@@ -88,7 +90,7 @@ npm-workspaces monorepo; three packages under `packages/`.
   - `ChatService.ts` — RAG retrieval + tool loop.
   - `QuoteService.ts` — live stock quotes (`fetchQuotes`: Yahoo → Nasdaq(US) → TMX(Canadian)) and daily-close history (`fetchHistory`: Cboe CDN(US) / TMX(Canadian) → Yahoo → Nasdaq), no key, cached, failure-tolerant.
   - `FxService.ts` — foreign-exchange rates (`fetchRates`, Frankfurter → open.er-api → stale → identity) for multi-currency portfolio totals, no key, cached ~1h, failure-tolerant.
-  - `MarketService.ts` — market discovery, no key, cached, failure-tolerant: `searchSymbols` (Nasdaq autocomplete for US + the TSX company directory for Canadian, ".TO"-suffixed), `screenSector` (Nasdaq screener, 11 sector tokens), `marketMovers` (most active / gainers / losers).
+  - `MarketService.ts` — market discovery, no key, cached, failure-tolerant: `searchSymbols` (Nasdaq autocomplete for US + the TSX company directory for Canadian, ".TO"-suffixed and re-ranked exact-symbol → companies → ETF wrappers, since the directory ranks Shopify-themed ETFs above Shopify Inc.), `screenSector` (Nasdaq screener, 11 sector tokens), `marketMovers` (US most active / gainers / losers via Nasdaq, plus `canada` = TSX most-active via TMX `getMarketMovers`), `marketPulse` (index-proxy ETFs via `fetchQuotes`), `popularEtfs` (curated shelf, priced live), `stockProfile` (Nasdaq quote-summary / TMX GraphQL fundamentals), `stockNews` (Nasdaq per-symbol RSS, regex-parsed + entity-decoded / TMX news).
   - `positions.ts` — average-cost position accounting from a holding's lots (`derivePosition`).
   - `categoryStyle.ts` — auto icon/color for new categories.
 - `providers/` — model-provider registry keyed by `PROVIDER`; `OllamaProvider` is the only impl.
@@ -390,7 +392,12 @@ floating **`components/ChatDock.tsx`** (draggable by its top bar; **resizable fr
 + top-left corner** — handles live on the sides away from the toolbar buttons so a bottom-right-docked
 panel grows up/left; rect persisted to `localStorage` `stashd.chatDock`; z-index 90, below modal scrims).
 Its top toolbar is compacted in the dock variant (`.chat-layout--dock`: truncated history title,
-icon-only New chat, tighter mode toggle) so it doesn't overflow the narrow panel. A shared
+icon-only New chat, tighter mode toggle) so it doesn't overflow the narrow panel; the composer's
+keyboard-hint chips (`↵ send · ⇧↵ line`) are also hidden in the dock — they squeezed the narrow
+input to a sliver (full page keeps them). The **history popover is dock-anchored in the dock**
+(`.chat-layout--dock .chat-hist` goes `position: static` so `.chat-hist-pop` spans the dock and caps
+to its height) — button-anchored, its fixed 320px/60vh size overflowed and was clipped by a
+minimum-size dock (`overflow: hidden`). The popover scrolls with its scrollbar hidden (by taste). A shared
 **`ChatDockContext`** (mounted in `App.tsx` above `<Routes>`) holds `{ open, activeConvId }` so the panel
 and its conversation survive navigation. The **corner `ChatLauncher`** opens the dock (`openDock()`); the
 **sidebar "Ask the stash"** link goes to the **full-page** `/chat` (a plain `NavLink`), and the dock's
@@ -560,16 +567,25 @@ for US, cached ~6h, native currency — no FX); `?days` trims the series server-
 30; `lib/trends.ts` re-trims client-side so the "30d" label holds even against a stale server). Powers
 the **stock detail page** (route `/portfolio/:symbol`, `pages/StockPage.tsx`): clicking any
 holding/watchlist/discover row opens it — it works for **any** symbol, owned or not. Layout is a
-**chart + rail grid** (`.stock-grid`, collapsing to one column under ~1020px): the left column holds the
-**`StockHistoryChart`** (hand-built inline SVG price line, range selector `1W 1M 3M 6M YTD 1Y ALL`,
-hover tooltip, graceful empty state), a **period-returns strip** (1W/1M/3M/6M/YTD/1Y/All computed
-client-side from the closes; windows older than the data show "—"), and — when the holding has lots —
-a read-only **Transactions** table (buy/sell chips, per-lot totals, "Manage" opens `HoldingDialog`).
-The right rail stacks fact cards: **Your position** (shares · avg cost · book cost · market value ·
-unrealized/realized/total return · weight, plus Edit/Watch actions, supporting-document link and notes)
-or a **"Not in your portfolio"** CTA card (Add to holdings / Watch), and **Statistics** (previous
-close, today, 52-week low/high with a **range meter** marking where today's price sits). (There is
-**no** portfolio-wide performance graph — removed in favor of this per-stock view.)
+**full-width chart + rail grid** (`.stock-grid`, page `maxWidth: none` like the portfolio; rail 360px;
+collapsing to one column under ~1020px): the left column holds the **`StockHistoryChart`** (hand-built
+inline SVG price line, range selector `1W 1M 3M 6M YTD 1Y ALL`, hover tooltip, graceful empty state;
+taller here — `.stock-main .perf-plot` is `min(400px, 38vh)`), a **period-returns strip**
+(1W/1M/3M/6M/YTD/1Y/All computed client-side from the closes; windows older than the data show "—"),
+— when the holding has lots — a read-only **Transactions** table (buy/sell chips, per-lot totals,
+"Manage" opens `HoldingDialog`), and a **Recent news** card (`GET /market/news/:symbol`, headline ·
+source · relative date, external links). The right rail stacks fact cards: **Your position** (shares ·
+avg cost · book cost · market value · unrealized/realized/total return · weight, plus Edit/Watch
+actions, supporting-document link and notes) or a **"Not in your portfolio"** CTA card (Add to holdings
+/ Watch), a **Signal** card (`lib/signals.ts` `buildSignal` — a client-side heuristic verdict
+Strong buy → Strong sell from ±1 votes: price vs 50-day SMA, 50 vs 200-day SMA posture, Wilder RSI-14
+extremes, analyst-target upside when available; needs ≥2 computable indicators, renders each vote with
+a colored dot and an explicit "not investment advice" line), **Statistics** (previous close, today,
+52-week low/high with a **range meter** marking where today's price sits), and **Fundamentals**
+(`GET /market/profile/:symbol` — market cap, P/E, EPS, dividend yield/amount/ex-date, 1-yr target,
+volumes; sector · industry · exchange ride in the header sub-line). Profile + news fetch after the
+quote resolves (its currency routes bare Canadian symbols to TMX) and never block the page. (There is **no** portfolio-wide performance graph — removed in favor of
+this per-stock view.)
 
 **Market discovery** (`services/MarketService.ts`, `routes/market.ts` at `/api/market`, no key, cached,
 failure-tolerant — outages degrade to empty lists): **ticker search** (`searchSymbols`: Nasdaq
@@ -580,13 +596,18 @@ first; Nasdaq's share-class name boilerplate is stripped by `cleanName`), a **se
 (`marketMovers`: most active by dollar volume / gainers / losers — beware Nasdaq overloads the `change`
 column, so percent is only trusted when the string contains "%"). Client surfaces: 
 **`components/TickerSearch.tsx`** — a debounced combobox (arrow keys + Enter; Enter with no selection
-falls through to the raw ticker) used for the **watchlist add** on `/portfolio` and the hero search on
-Discover; **`components/MarketExplorer.tsx`** — the movers/sector-chip panel + table with per-row
-**quick-watch toggles** (host passes `watchedSymbols` + `onToggleWatch` so its own watchlist UI stays in
-step) hosted **full-size on `/discover`** (`pages/DiscoverPage.tsx` — no sidebar entry by choice; the
-route is reached via the portfolio embed's "Open Discover" links) and **embedded compactly (8 rows) at
-the bottom of `/portfolio`**, so research lives one scroll below the holdings. Every discovery row
-navigates to `/portfolio/:symbol`.
+falls through to the raw ticker) used twice on `/portfolio`: the **watchlist add** (selects add to the
+watchlist) and the Discover section's **ticker lookup** (selects open the stock page); and
+**`components/MarketExplorer.tsx`** — a **market-pulse strip** (clickable index tiles: S&P 500 /
+Nasdaq 100 / Dow / Russell 2000 / TSX Composite day-moves via `GET /market/pulse`), tabs for
+**Most active / Gainers / Losers / Canada / ETFs** (Canada = the TSX most-active list via TMX; the
+ETFs tab is the curated `GET /market/etfs` shelf — US + Canadian, native-currency prices with CAD
+tags) plus the sector chips, over a full table with
+per-row **quick-watch toggles** (the host passes `watchedSymbols` + `onToggleWatch` so the watchlist
+section above stays in step). It all lives in the **Discover section at the bottom of `/portfolio`** —
+there is deliberately **no standalone Discover page, route, or sidebar entry** (one was built
+2026-07-05 and removed the next day in favor of keeping everything on the Portfolio tab). Every
+discovery row navigates to `/portfolio/:symbol`.
 
 **Watchlist** (`watchlist` table; `routes/watchlist.ts` mounted at `/api/watchlist`): stocks you follow
 but don't own. `GET /watchlist` returns items enriched with live quotes (native currency, day change);
@@ -756,7 +777,11 @@ Components call API functions from `api.ts` directly and then `refresh()`.
 | `DELETE /watchlist/:id`                          | remove a watched stock                                                                                             |
 | `GET /market/search?q=`                          | ticker/company typeahead → `SymbolSuggestion[]` (US via Nasdaq autocomplete, Canadian via TSX directory, ".TO"-suffixed; empty on outage) |
 | `GET /market/screener?sector=technology`         | top-of-sector US stocks by market cap → `ScreenerRow[]` (11 sector tokens; `GET /market/sectors` lists them)       |
-| `GET /market/movers?kind=active\|gainers\|losers`| today's US movers → `ScreenerRow[]`                                                                                |
+| `GET /market/movers?kind=active\|gainers\|losers\|canada`| today's movers → `ScreenerRow[]` (US via Nasdaq; `canada` = TSX most-active via TMX, ".TO"-suffixed, CAD)   |
+| `GET /market/pulse`                              | index-proxy tiles (S&P/Nasdaq/Dow/Russell/TSX via SPY/QQQ/DIA/IWM/XIC.TO) → `PulseItem[]`                          |
+| `GET /market/etfs`                               | curated popular-ETFs shelf, priced live (US + Canadian, native currency) → `ScreenerRow[]`                          |
+| `GET /market/profile/:symbol?ccy=CAD`            | fundamentals (`StockProfile`: market cap, P/E, dividend, volumes, sector; Nasdaq summary / TMX by `ccy`)            |
+| `GET /market/news/:symbol?ccy=CAD`               | recent headlines (`NewsItem[]`; Nasdaq per-symbol RSS / TMX news, entity-decoded; CA items link to the TMX quote page) |
 
 ## 7. Where it's headed
 

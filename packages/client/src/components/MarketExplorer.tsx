@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Activity, Eye, EyeOff, TrendingDown, TrendingUp } from 'lucide-react';
-import { MoversKind, ScreenerRow } from '@stashd/shared';
-import { getMarketMovers, getSectorScreener } from '../api';
-import { formatMoney } from '../lib/format';
+import { Activity, Eye, EyeOff, Layers, Leaf, TrendingDown, TrendingUp } from 'lucide-react';
+import { MoversKind, PulseItem, ScreenerRow } from '@stashd/shared';
+import { getMarketMovers, getMarketPulse, getPopularEtfs, getSectorScreener } from '../api';
+import { formatCompact, formatMoney } from '../lib/format';
 import { gainClass, signedPct } from '../lib/gains';
 
 // The market-discovery panel: today's US movers and the biggest names per
@@ -14,6 +14,7 @@ const MOVER_TABS: { kind: MoversKind; label: string; icon: typeof Activity }[] =
   { kind: 'active', label: 'Most active', icon: Activity },
   { kind: 'gainers', label: 'Gainers', icon: TrendingUp },
   { kind: 'losers', label: 'Losers', icon: TrendingDown },
+  { kind: 'canada', label: 'Canada', icon: Leaf },
 ];
 
 // Display order + labels for the Nasdaq screener's sector tokens.
@@ -31,19 +32,18 @@ const SECTORS: { id: string; label: string }[] = [
   { id: 'telecommunications', label: 'Telecom' },
 ];
 
-type View = { type: 'movers'; kind: MoversKind } | { type: 'sector'; id: string };
+type View = { type: 'movers'; kind: MoversKind } | { type: 'etfs' } | { type: 'sector'; id: string };
 
 function viewKey(v: View): string {
-  return v.type === 'movers' ? `m:${v.kind}` : `s:${v.id}`;
+  if (v.type === 'movers') return `m:${v.kind}`;
+  if (v.type === 'etfs') return 'etfs';
+  return `s:${v.id}`;
 }
 
-// $4.71T / $532.1B / $48.2M — compact market caps for the table.
+// $4.71T / $532.1B — compact market caps for the table.
 function formatCap(v?: number): string {
-  if (v === undefined || v <= 0) return '—';
-  if (v >= 1e12) return `$${(v / 1e12).toFixed(2)}T`;
-  if (v >= 1e9) return `$${(v / 1e9).toFixed(1)}B`;
-  if (v >= 1e6) return `$${(v / 1e6).toFixed(1)}M`;
-  return `$${Math.round(v).toLocaleString()}`;
+  const c = formatCompact(v);
+  return c === '—' ? c : `$${c}`;
 }
 
 export default function MarketExplorer({
@@ -58,6 +58,7 @@ export default function MarketExplorer({
   const [view, setView] = useState<View>({ type: 'movers', kind: 'active' });
   const [tables, setTables] = useState<Record<string, ScreenerRow[]>>({});
   const [loading, setLoading] = useState(false);
+  const [pulse, setPulse] = useState<PulseItem[]>([]);
 
   const key = viewKey(view);
   const rows = tables[key];
@@ -66,7 +67,10 @@ export default function MarketExplorer({
     const k = viewKey(v);
     setLoading(true);
     try {
-      const data = v.type === 'movers' ? await getMarketMovers(v.kind) : await getSectorScreener(v.id);
+      const data =
+        v.type === 'movers' ? await getMarketMovers(v.kind)
+        : v.type === 'etfs' ? await getPopularEtfs()
+        : await getSectorScreener(v.id);
       setTables(t => ({ ...t, [k]: data }));
     } catch {
       setTables(t => ({ ...t, [k]: [] }));
@@ -79,10 +83,35 @@ export default function MarketExplorer({
     if (tables[key] === undefined) void load(view);
   }, [view, key, tables, load]);
 
+  useEffect(() => {
+    getMarketPulse().then(setPulse).catch(() => {});
+  }, []);
+
   const shown = rows;
 
   return (
     <div className="breakdown breakdown-panel discover-panel">
+      {pulse.length > 0 && (
+        <div className="pulse-strip">
+          {pulse.map(p => (
+            <button
+              key={p.symbol}
+              className="pulse-tile"
+              title={`${p.label} (via ${p.symbol})`}
+              onClick={() => onOpenStock(p.symbol)}
+            >
+              <span className="pulse-label">{p.label}</span>
+              <span className={`pulse-pct ${gainClass(p.changePct)}`}>
+                {p.changePct !== undefined ? signedPct(p.changePct) : '—'}
+              </span>
+              {p.price !== undefined && (
+                <span className="pulse-price">{formatMoney(p.price, p.currency ?? 'USD')}</span>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+
       <div className="breakdown-tabs discover-tabs">
         <div className="breakdown-tablist" role="tablist">
           {MOVER_TABS.map(t => {
@@ -101,8 +130,21 @@ export default function MarketExplorer({
               </button>
             );
           })}
+          <button
+            role="tab"
+            aria-selected={view.type === 'etfs'}
+            className={`breakdown-tab${view.type === 'etfs' ? ' active' : ''}`}
+            onClick={() => setView({ type: 'etfs' })}
+          >
+            <Layers size={12} />
+            ETFs
+          </button>
         </div>
-        <span className="discover-note">US markets · live</span>
+        <span className="discover-note">
+          {view.type === 'etfs' ? 'US + Canadian · live'
+            : view.type === 'movers' && view.kind === 'canada' ? 'TSX · live'
+            : 'US markets · live'}
+        </span>
       </div>
       <div className="discover-sectors" role="tablist" aria-label="Sectors">
         {SECTORS.map(s => {
@@ -152,10 +194,13 @@ export default function MarketExplorer({
                     <td>
                       <div className="h-sym">
                         <span className="h-ticker">{r.symbol}</span>
+                        {r.currency && r.currency !== 'USD' && (
+                          <span className="h-ccy" title={`Priced in ${r.currency}`}>{r.currency}</span>
+                        )}
                         <span className="h-name">{r.name}</span>
                       </div>
                     </td>
-                    <td className="num-col">{r.price !== undefined ? formatMoney(r.price, 'USD') : <span className="li-empty">—</span>}</td>
+                    <td className="num-col">{r.price !== undefined ? formatMoney(r.price, r.currency ?? 'USD') : <span className="li-empty">—</span>}</td>
                     <td className={`num-col ${gainClass(r.changePct)}`}>
                       {r.changePct !== undefined ? signedPct(r.changePct) : <span className="li-empty">—</span>}
                     </td>
@@ -180,7 +225,6 @@ export default function MarketExplorer({
           </table>
         </div>
       )}
-      {footer}
     </div>
   );
 }

@@ -7,6 +7,7 @@ import {
   AgentTraceSink,
   AgenticWorkflow,
   createDocumentAgentTools,
+  createPortfolioAgentTools,
   createProjectAgentTools,
   OllamaAgentClient,
   StoreDocumentCorpus,
@@ -189,6 +190,7 @@ export class AgenticChatService {
         [
           ...createProjectAgentTools(this.store),
           ...createDocumentAgentTools(new StoreDocumentCorpus(this.store)),
+          ...createPortfolioAgentTools(this.store),
         ],
         traceSink,
       );

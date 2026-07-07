@@ -3,6 +3,7 @@ import { CategoryId, ChatAttachment, ChatMessage, ChatSSEEvent, Citation, Docume
 import { StoreService } from './StoreService';
 import { EmbeddingService } from './EmbeddingService';
 import { buildCustomCategory, slugifyCategory } from './categoryStyle';
+import { loadSnapshot } from './portfolio';
 
 // Chat uses the same Ollama endpoint/model as classification — the multimodal
 // gemma there supports native tool calling.
@@ -77,6 +78,20 @@ const TOOLS = [
       name: 'list_categories',
       description: 'List all category drawers with their document counts.',
       parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_portfolio',
+      description:
+        "Read the user's stock portfolio: every holding with its live price, market value, portfolio weight, day change and total return (in the holding's own currency), plus base-currency totals and the watchlist (with folders and thesis notes). Use for any question about the user's investments, positions, gains, allocation, or watched stocks.",
+      parameters: {
+        type: 'object',
+        properties: {
+          base: { type: 'string', description: 'Optional 3-letter base currency for the totals (default CAD)' },
+        },
+      },
     },
   },
   {
@@ -262,7 +277,7 @@ export class ChatService {
       : '(no projects yet)';
 
     const sections: string[] = [
-      `You are the assistant inside Stashd, a personal document organizer with a cost-tracking section called Ledgers. You answer questions about the user's filed documents and project costs, and can act on documents with your tools.
+      `You are the assistant inside Stashd, a personal document organizer with a cost-tracking section called Ledgers and a stock Portfolio. You answer questions about the user's filed documents, project costs, and investments, and can act on documents with your tools.
 
 Today's date: ${new Date().toISOString().slice(0, 10)}.
 
@@ -270,6 +285,7 @@ Rules:
 - Ground every claim about a document in its actual content (the excerpts below, pinned documents, or read_doc results). If you cannot find something, say so plainly.
 - Cite documents inline using the exact form [doc:<id>] right after the claim it supports, e.g. "the rent is $2,400 [doc:abc-123]". Always cite when you state facts from a document.
 - For money or project questions, use list_projects / read_project to get the figures rather than guessing. Refer to projects by name in your answer.
+- For questions about the user's stocks, holdings, gains, allocation, or watchlist, call get_portfolio and answer from its live figures (never from memory). Say which currency an amount is in.
 - You can also write to the ledgers: add_line_item records a cost against a project, and create_project starts a new ledger. Only do this when the user explicitly asks to add/record a cost or create a project. If they ask to log a cost against a project that doesn't exist yet, create it first, then add the line. After writing, confirm exactly what you added.
 - Use search_docs / read_doc freely to investigate. Only call update_doc when the user explicitly asks for a change.
 - Answer in plain conversational prose. Keep it concise.
@@ -334,7 +350,7 @@ ${projectList}`,
 
       messages.push({ role: 'assistant', content, tool_calls: calls });
       for (const call of calls) {
-        const record = this.executeTool(call.function.name, call.function.arguments ?? {});
+        const record = await this.executeTool(call.function.name, call.function.arguments ?? {});
         toolCalls.push(record.record);
         send({ type: 'tool', call: record.record });
         messages.push({ role: 'tool', content: record.result });
@@ -394,11 +410,61 @@ ${projectList}`,
     return { content, calls };
   }
 
-  // Tools execute synchronously against the store; each returns both the JSON
-  // payload fed back to the model and a human-readable record for the UI.
-  private executeTool(name: string, args: Record<string, unknown>): { result: string; record: ToolCallRecord } {
+  // Tools execute against the store (get_portfolio also prices live); each
+  // returns both the JSON payload fed back to the model and a human-readable
+  // record for the UI.
+  private async executeTool(name: string, args: Record<string, unknown>): Promise<{ result: string; record: ToolCallRecord }> {
     try {
       switch (name) {
+        case 'get_portfolio': {
+          const rawBase = String(args.base ?? '').trim().toUpperCase();
+          const base = /^[A-Z]{3}$/.test(rawBase) ? rawBase : 'CAD';
+          const snap = await loadSnapshot(this.store, base);
+          const pct = (v?: number) => (v === undefined ? undefined : +(v * 100).toFixed(2));
+          const money = (v?: number) => (v === undefined ? undefined : +v.toFixed(2));
+          const result = {
+            baseCurrency: snap.baseCurrency,
+            quotesLive: snap.quotesLive,
+            totals: {
+              marketValue: money(snap.totals.marketValue),
+              costBasis: money(snap.totals.costBasis),
+              dayChange: money(snap.totals.dayChange),
+              dayChangePct: pct(snap.totals.dayChangePct),
+              totalGain: money(snap.totals.totalGain),
+              totalReturnPct: pct(snap.totals.totalReturnPct),
+              realizedGain: money(snap.totals.realizedGain),
+              holdings: snap.totals.holdingCount,
+              priced: snap.totals.pricedCount,
+            },
+            note: 'Per-holding money is in each holding\'s own currency; totals are in the base currency.',
+            holdings: snap.holdings.map(h => ({
+              symbol: h.symbol,
+              name: h.name,
+              currency: h.currency,
+              shares: +h.shares.toFixed(4),
+              avgCost: money(h.avgCost),
+              price: money(h.currentPrice),
+              marketValue: money(h.marketValue),
+              weightPct: pct(h.weight),
+              dayChangePct: pct(h.dayChangePct),
+              totalReturnPct: pct(h.totalReturnPct),
+            })),
+            watchlist: this.store.listWatchlist().map(w => ({
+              symbol: w.symbol,
+              name: w.name,
+              folder: w.folder,
+              thesis: w.notes,
+            })),
+          };
+          return {
+            result: JSON.stringify(result),
+            record: {
+              tool: name,
+              args,
+              summary: `Read the portfolio — ${snap.totals.holdingCount} holding${snap.totals.holdingCount === 1 ? '' : 's'}, ${base} ${snap.totals.marketValue.toFixed(0)} market value`,
+            },
+          };
+        }
         case 'search_docs': {
           const query = String(args.query ?? '');
           const hits = this.store.searchDocuments(query).slice(0, 8);

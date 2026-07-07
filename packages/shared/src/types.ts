@@ -409,7 +409,8 @@ export interface WatchlistItem {
   id: string;
   symbol: string;
   name?: string;
-  notes?: string;
+  notes?: string; // free-form thesis note ("why I'm watching this")
+  folder?: string; // optional grouping (e.g. "AI plays", "Dividend ideas")
   createdAt: string;
 }
 
@@ -417,6 +418,7 @@ export interface WatchlistItemInput {
   symbol?: string;
   name?: string;
   notes?: string;
+  folder?: string;
 }
 
 export interface WatchlistItemWithQuote extends WatchlistItem {
@@ -444,17 +446,123 @@ export interface SymbolSuggestion {
   asset?: string; // e.g. STOCKS | ETF
 }
 
-// One row of a discovery table (sector screener or market movers). US-only,
-// USD. `changePct` is a fraction (0.0484 = +4.84%).
+// One row of a discovery table (sector screener, market movers, or the
+// popular-ETFs list). `changePct` is a fraction (0.0484 = +4.84%); `currency`
+// defaults to USD when absent (screener/movers are US-only).
 export interface ScreenerRow {
   symbol: string;
   name: string;
   price?: number;
   changePct?: number;
   marketCap?: number;
+  currency?: string;
+  // Value-screen enrichment (?enrich=1): from each symbol's cached profile.
+  peRatio?: number;
+  targetUpside?: number; // (analyst 1-yr target − price) ÷ price, fraction
 }
 
-export type MoversKind = "active" | "gainers" | "losers";
+// "canada" is the TSX most-active list (TMX); the rest are US (Nasdaq).
+export type MoversKind = "active" | "gainers" | "losers" | "canada";
+
+// One index tile of the Discover section's market-pulse strip (index proxies
+// priced via the regular quote chain, so it works with no key).
+export interface PulseItem {
+  symbol: string; // the proxy ETF (e.g. SPY)
+  label: string; // what it stands for (e.g. "S&P 500")
+  price?: number;
+  changePct?: number;
+  currency?: string;
+}
+
+// A stock's profile/fundamentals for the detail page. US symbols come from
+// Nasdaq's quote summary, Canadian from TMX — fields are best-effort and
+// undefined when the source doesn't carry them.
+export interface StockProfile {
+  symbol: string;
+  exchange?: string;
+  sector?: string;
+  industry?: string;
+  marketCap?: number;
+  peRatio?: number;
+  eps?: number;
+  dividendYield?: number; // fraction (0.0035 = 0.35%)
+  annualizedDividend?: number; // per share, native currency
+  exDividendDate?: string;
+  oneYearTarget?: number;
+  volume?: number;
+  avgVolume?: number;
+  currency?: string;
+}
+
+// One headline for the stock page's news card. US headlines come from
+// Nasdaq's per-symbol RSS feed, Canadian from TMX (which carries no per-item
+// URL — those link to the TMX quote page instead). `sentiment` is a simple
+// server-side lexicon read of the headline (advisory, not analysis).
+export type NewsSentiment = "pos" | "neg" | "neu";
+
+export interface NewsItem {
+  title: string;
+  url?: string;
+  source?: string;
+  publishedAt?: string; // ISO-ish; display-formatted client-side
+  sentiment?: NewsSentiment;
+}
+
+// Insider-trading activity summary for one US symbol (Nasdaq data; Canadian
+// symbols have none). Counts are open-market transactions.
+export interface InsiderActivity {
+  symbol: string;
+  buys3m: number;
+  sells3m: number;
+  buys12m: number;
+  sells12m: number;
+  sharesBought3m?: number;
+  sharesSold3m?: number;
+  // Net posture over 3 months: more buys than sells → "buying", etc.
+  posture: "buying" | "selling" | "mixed" | "quiet";
+}
+
+// ── Portfolio risk & health ──────────────────────────────────────────────────
+// Computed from ~1y of daily closes per holding (benchmark SPY), current-weight
+// blended for the portfolio level. All annualized where applicable; Sharpe uses
+// a 0% risk-free rate. Heuristic and advisory — the UI says so.
+
+export interface RiskStats {
+  volatility?: number; // annualized stdev of daily returns (fraction)
+  beta?: number; // vs the benchmark
+  sharpe?: number; // annualized return ÷ volatility (rf = 0)
+  maxDrawdown?: number; // worst peak-to-trough over the window (negative fraction)
+  return1y?: number; // simple return over the window (fraction)
+}
+
+export interface HoldingRisk extends RiskStats {
+  symbol: string;
+  weight?: number; // share of base market value (0..1)
+}
+
+export interface CorrelationPair {
+  a: string;
+  b: string;
+  rho: number; // Pearson correlation of daily returns
+}
+
+export interface HealthWarning {
+  kind: "concentration" | "correlation" | "currency" | "sector";
+  severity: "info" | "warn";
+  message: string;
+}
+
+export interface PortfolioHealth {
+  benchmark: string; // e.g. "SPY"
+  windowDays: number; // calendar window the stats cover
+  portfolio: RiskStats;
+  holdings: HoldingRisk[];
+  correlations: CorrelationPair[]; // strongest pairs, high → low
+  warnings: HealthWarning[];
+  suggestions: string[]; // heuristic rebalancing hints, plain sentences
+  baseCurrency: string;
+  asOf: string;
+}
 
 // Fields a client may set on a holding; the server owns id / timestamps.
 // `documentId: null` explicitly clears the link.

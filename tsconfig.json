@@ -7,11 +7,7 @@
     "skipLibCheck": true,
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
-    "jsx": "react-jsx",
-    "baseUrl": ".",
-    "paths": {
-      "@stashd/shared": ["packages/shared/src/index.ts"]
-    }
+    "jsx": "react-jsx"
   },
   "include": ["packages/*/src"]
 }

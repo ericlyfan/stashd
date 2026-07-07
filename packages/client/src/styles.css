@@ -2482,7 +2482,17 @@ body.chat-drag-over .drop-curtain {
   gap: 16px;
 }
 .chat-layout--dock .chat-compose {
-  padding: 10px 12px;
+  padding: 8px 10px 8px 14px;
+  gap: 8px;
+}
+/* No keyboard-hint chips in the popup — they squeezed the input to a sliver,
+   and Enter-to-send is self-evident there. The full page keeps them. */
+.chat-layout--dock .chat-compose-hint {
+  display: none;
+}
+.chat-layout--dock .chat-send {
+  width: 28px;
+  height: 28px;
 }
 
 .chat-dock .chat-topbar {
@@ -2584,6 +2594,17 @@ body.dragging-dock {
 .chat-layout--dock .chat-hist {
   flex: 1 1 auto;
   min-width: 0;
+  /* Let the popover anchor to the dock (the nearest positioned ancestor)
+     instead of this button — a button-anchored 320px/60vh panel overflows,
+     and is clipped by, a small dock. */
+  position: static;
+}
+.chat-dock .chat-hist-pop {
+  top: 50px; /* just below the topbar */
+  left: 10px;
+  right: 10px;
+  width: auto;
+  max-height: calc(100% - 60px); /* stays inside the dock; scrolls internally */
 }
 .chat-layout--dock .chat-hist-btn {
   max-width: 100%;
@@ -2826,11 +2847,16 @@ body.dragging-dock {
   width: 320px;
   max-height: 60vh;
   overflow-y: auto;
+  /* Scrolls, but without a visible scrollbar (by taste). */
+  scrollbar-width: none;
   padding: 6px;
   background: var(--card-raised);
   border: 1px solid var(--line);
   border-radius: var(--radius);
   box-shadow: 0 10px 28px rgba(28, 24, 20, 0.16);
+}
+.chat-hist-pop::-webkit-scrollbar {
+  display: none;
 }
 
 .chat-hist-rubric {
@@ -5058,11 +5084,12 @@ body.dragging-dock {
   margin-top: 3px;
 }
 
-/* Stock detail: chart + transactions on the left, fact cards on the right. */
+/* Stock detail: chart + news + transactions on the left, fact cards on the
+   right. Full-bleed like the portfolio page; the chart carries the width. */
 .stock-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 316px;
-  gap: 18px;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 20px;
   align-items: start;
   margin-top: 4px;
 }
@@ -5076,6 +5103,17 @@ body.dragging-dock {
 }
 .stock-main .perf-chart {
   margin-top: 0;
+}
+/* A taller plot on the detail page — the chart is the page's centerpiece. */
+.stock-main .perf-plot {
+  height: min(400px, 38vh);
+}
+.stock-sub-meta {
+  margin-left: 10px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.03em;
+  color: var(--ink-faint);
 }
 .stock-rail {
   display: flex;
@@ -5279,6 +5317,131 @@ body.dragging-dock {
   background: var(--wax-soft);
 }
 
+/* Signal card: verdict badge + one row per indicator vote. */
+.signal-badge {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border-radius: 99px;
+  padding: 3px 11px;
+}
+.signal-strong-buy,
+.signal-buy {
+  color: var(--moss);
+  background: var(--moss-soft);
+  border: 1px solid var(--moss);
+}
+.signal-strong-buy {
+  color: var(--card-raised);
+  background: var(--moss);
+}
+.signal-hold {
+  color: var(--gold);
+  background: rgba(160, 125, 42, 0.1);
+  border: 1px solid var(--gold);
+}
+.signal-sell,
+.signal-strong-sell {
+  color: #c0392b;
+  background: rgba(192, 57, 43, 0.09);
+  border: 1px solid #c0392b;
+}
+.signal-strong-sell {
+  color: var(--card-raised);
+  background: #c0392b;
+}
+.signal-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.signal-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: 12px;
+}
+.signal-row:last-child {
+  border-bottom: none;
+}
+.signal-dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  align-self: center;
+  background: var(--ink-faint);
+}
+.signal-dot.bull {
+  background: var(--moss);
+}
+.signal-dot.bear {
+  background: #c0392b;
+}
+.signal-label {
+  color: var(--ink-2);
+  flex: 1;
+}
+.signal-detail {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-3);
+  text-align: right;
+}
+.signal-disclaimer {
+  margin: 10px 0 0;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--ink-faint);
+}
+
+/* Recent-news card on the stock page. */
+.stock-news {
+  margin-top: 14px;
+}
+.news-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.news-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+.news-item:last-child {
+  border-bottom: none;
+}
+.news-title {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--ink);
+  text-decoration: none;
+  min-width: 0;
+}
+a.news-title:hover {
+  color: var(--wax);
+}
+.news-meta {
+  flex-shrink: 0;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+
 /* ── Ticker search (typeahead) ───────────────────────────────────────────── */
 .ticker-search {
   position: relative;
@@ -5373,6 +5536,51 @@ body.dragging-dock {
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--ink-faint);
+}
+
+/* Market-pulse strip: index-proxy tiles across the top of the panel. */
+.pulse-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.pulse-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  border: 1px solid var(--line-soft);
+  background: var(--card-raised);
+  border-radius: var(--radius-sm);
+  padding: 9px 12px 8px;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 110ms ease;
+}
+.pulse-tile:hover {
+  border-color: var(--ink-3);
+}
+.pulse-label {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.pulse-pct {
+  font-family: var(--mono);
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+}
+.pulse-price {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
 }
 .discover-sectors {
   display: flex;

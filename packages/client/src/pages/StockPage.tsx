@@ -1,13 +1,24 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { ArrowLeft, Eye, EyeOff, FileText, Pencil, Plus, TrendingUp } from 'lucide-react';
-import { HistoryDay, HoldingInput, HoldingLot, HoldingWithQuote, StockHistory, WatchlistItemWithQuote } from '@stashd/shared';
+import { ArrowLeft, Eye, EyeOff, FileText, Newspaper, Pencil, Plus, TrendingUp } from 'lucide-react';
+import {
+  HistoryDay,
+  HoldingInput,
+  HoldingLot,
+  HoldingWithQuote,
+  NewsItem,
+  StockHistory,
+  StockProfile,
+  WatchlistItemWithQuote,
+} from '@stashd/shared';
 import {
   addWatchlist,
   createHolding,
   deleteHolding,
   getPortfolio,
   getStockHistory,
+  getStockNews,
+  getStockProfile,
   getWatchlist,
   listLots,
   removeWatchlist,
@@ -16,8 +27,9 @@ import {
 import { useStore } from '../store';
 import HoldingDialog from '../components/HoldingDialog';
 import StockHistoryChart from '../components/StockHistoryChart';
-import { formatDate, formatMoney, formatMoneyCell } from '../lib/format';
+import { formatCompact, formatDate, formatMoney, formatMoneyCell, relTime } from '../lib/format';
 import { gainClass, signedAmount, signedPct } from '../lib/gains';
+import { buildSignal, VERDICT_LABEL } from '../lib/signals';
 
 // Period returns computed from the daily closes: last close vs the first close
 // inside each window. Undefined when the window has no earlier data (e.g. a
@@ -74,6 +86,8 @@ export default function StockPage() {
   const [holding, setHolding] = useState<HoldingWithQuote | null>(null);
   const [watch, setWatch] = useState<WatchlistItemWithQuote | null>(null);
   const [lots, setLots] = useState<HoldingLot[]>([]);
+  const [profile, setProfile] = useState<StockProfile | null>(null);
+  const [news, setNews] = useState<NewsItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(false);
   const [adding, setAdding] = useState(false);
@@ -91,6 +105,11 @@ export default function StockPage() {
       setHolding(h);
       setWatch(wl.find(w => w.symbol.trim().toUpperCase() === sym) ?? null);
       setLots(h && h.lotCount > 0 ? await listLots(h.id).catch(() => []) : []);
+      // Fundamentals + headlines ride behind the fold; fetched after the
+      // quote resolves (its currency routes bare Canadian symbols to TMX)
+      // and never block the page.
+      void getStockProfile(sym, hist.currency).then(setProfile).catch(() => {});
+      void getStockNews(sym, hist.currency).then(setNews).catch(() => {});
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Could not load stock', 'err');
     } finally {
@@ -151,6 +170,10 @@ export default function StockPage() {
   const points = history?.points ?? [];
   const returns = useMemo(() => periodReturns(points), [points]);
   const range52 = useMemo(() => yearRange(points, history?.currentPrice), [points, history?.currentPrice]);
+  const signal = useMemo(
+    () => buildSignal(points, history?.currentPrice, profile?.oneYearTarget),
+    [points, history?.currentPrice, profile?.oneYearTarget],
+  );
 
   if (loading) {
     return (
@@ -166,7 +189,7 @@ export default function StockPage() {
   const dayChange = history?.dayChange;
 
   return (
-    <div className="page" style={{ maxWidth: 1180 }}>
+    <div className="page" style={{ maxWidth: 'none' }}>
       <Link to="/portfolio" className="back-link">
         <ArrowLeft size={13} /> Portfolio
       </Link>
@@ -181,7 +204,16 @@ export default function StockPage() {
             <span className="stock-ticker">{sym}</span>
             <span className="h-ccy" title={`Priced in ${ccy}`}>{ccy}</span>
           </h1>
-          {name && <p className="page-sub" style={{ margin: 0 }}>{name}</p>}
+          {(name || profile) && (
+            <p className="page-sub" style={{ margin: 0 }}>
+              {name}
+              {profile && (profile.sector || profile.exchange) && (
+                <span className="stock-sub-meta">
+                  {[profile.sector, profile.industry, profile.exchange].filter(Boolean).join(' · ')}
+                </span>
+              )}
+            </p>
+          )}
         </div>
         <div className="stock-price">
           {price !== undefined ? (
@@ -254,6 +286,31 @@ export default function StockPage() {
               </div>
             </section>
           )}
+
+          {news.length > 0 && (
+            <section className="stock-card stock-news">
+              <div className="stock-card-head">
+                <h2 className="stock-card-title">
+                  <Newspaper size={11} style={{ verticalAlign: '-1.5px', marginRight: 6 }} />
+                  Recent news
+                </h2>
+              </div>
+              <ul className="news-list">
+                {news.map((n, i) => (
+                  <li key={i} className="news-item">
+                    {n.url ? (
+                      <a href={n.url} target="_blank" rel="noreferrer" className="news-title">{n.title}</a>
+                    ) : (
+                      <span className="news-title">{n.title}</span>
+                    )}
+                    <span className="news-meta">
+                      {[n.source, n.publishedAt ? relTime(n.publishedAt) : undefined].filter(Boolean).join(' · ')}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
         </div>
 
         <aside className="stock-rail">
@@ -321,6 +378,27 @@ export default function StockPage() {
             </section>
           )}
 
+          {signal && (
+            <section className="stock-card">
+              <div className="stock-card-head">
+                <h2 className="stock-card-title">Signal</h2>
+                <span className={`signal-badge signal-${signal.verdict}`}>{VERDICT_LABEL[signal.verdict]}</span>
+              </div>
+              <ul className="signal-rows">
+                {signal.rows.map(r => (
+                  <li key={r.label} className="signal-row">
+                    <span className={`signal-dot ${r.stance}`} />
+                    <span className="signal-label">{r.label}</span>
+                    <span className="signal-detail">{r.detail}</span>
+                  </li>
+                ))}
+              </ul>
+              <p className="signal-disclaimer">
+                A heuristic read of the price history — not investment advice.
+              </p>
+            </section>
+          )}
+
           <section className="stock-card">
             <div className="stock-card-head">
               <h2 className="stock-card-title">Statistics</h2>
@@ -353,6 +431,43 @@ export default function StockPage() {
               </div>
             )}
           </section>
+
+          {profile && (
+            <section className="stock-card">
+              <div className="stock-card-head">
+                <h2 className="stock-card-title">Fundamentals</h2>
+              </div>
+              <dl className="stock-facts">
+                {profile.marketCap !== undefined && (
+                  <div><dt>Market cap</dt><dd>${formatCompact(profile.marketCap)}</dd></div>
+                )}
+                {profile.peRatio !== undefined && (
+                  <div><dt>P/E ratio</dt><dd>{profile.peRatio.toFixed(1)}</dd></div>
+                )}
+                {profile.eps !== undefined && (
+                  <div><dt>EPS</dt><dd>{formatMoney(profile.eps, ccy)}</dd></div>
+                )}
+                {profile.dividendYield !== undefined && profile.dividendYield > 0 && (
+                  <div><dt>Dividend yield</dt><dd>{(profile.dividendYield * 100).toFixed(2)}%</dd></div>
+                )}
+                {profile.annualizedDividend !== undefined && profile.annualizedDividend > 0 && (
+                  <div><dt>Annual dividend</dt><dd>{formatMoney(profile.annualizedDividend, ccy)}</dd></div>
+                )}
+                {profile.exDividendDate && (
+                  <div><dt>Ex-dividend</dt><dd>{profile.exDividendDate}</dd></div>
+                )}
+                {profile.oneYearTarget !== undefined && (
+                  <div><dt>1-yr target</dt><dd>{formatMoney(profile.oneYearTarget, ccy)}</dd></div>
+                )}
+                {profile.volume !== undefined && (
+                  <div><dt>Volume</dt><dd>{formatCompact(profile.volume)}</dd></div>
+                )}
+                {profile.avgVolume !== undefined && (
+                  <div><dt>Avg volume</dt><dd>{formatCompact(profile.avgVolume)}</dd></div>
+                )}
+              </dl>
+            </section>
+          )}
 
           {watch?.notes && (
             <section className="stock-card">

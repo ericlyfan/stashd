@@ -57,10 +57,25 @@ export function createWatchlistRoutes(services: Services): Router {
       symbol,
       name: cleanText(body.name),
       notes: cleanText(body.notes),
+      folder: cleanText(body.folder),
       createdAt: new Date().toISOString(),
     };
     store.addWatchlistItem(item);
     res.status(201).json(item);
+  });
+
+  // PATCH /api/watchlist/:id — edit name / thesis notes / folder. A supplied
+  // empty string clears the field; omitted fields are untouched.
+  router.patch('/:id', (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const has = (k: string) => Object.prototype.hasOwnProperty.call(body, k);
+    const input: { name?: string; notes?: string; folder?: string } = {};
+    if (has('name')) input.name = cleanText(body.name) ?? '';
+    if (has('notes')) input.notes = cleanText(body.notes) ?? '';
+    if (has('folder')) input.folder = cleanText(body.folder) ?? '';
+    const updated = store.updateWatchlistItem(req.params.id, input);
+    if (!updated) return res.status(404).json({ error: 'Watchlist item not found' });
+    res.json(updated);
   });
 
   // DELETE /api/watchlist/:id
