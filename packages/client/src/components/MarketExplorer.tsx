@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
-import { Activity, Eye, EyeOff, Layers, Leaf, TrendingDown, TrendingUp } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Activity, ArrowDown, Eye, EyeOff, Layers, Leaf, TrendingDown, TrendingUp } from 'lucide-react';
 import { MoversKind, PulseItem, ScreenerRow } from '@stashd/shared';
 import { getMarketMovers, getMarketPulse, getPopularEtfs, getSectorScreener } from '../api';
 import { formatCompact, formatMoney } from '../lib/format';
@@ -59,6 +59,9 @@ export default function MarketExplorer({
   const [tables, setTables] = useState<Record<string, ScreenerRow[]>>({});
   const [loading, setLoading] = useState(false);
   const [pulse, setPulse] = useState<PulseItem[]>([]);
+  // Sector-view sort: null keeps the server's market-cap order; everything
+  // sorts biggest-first. Resets when the view changes.
+  const [sortKey, setSortKey] = useState<'upside' | 'today' | 'cap' | null>(null);
 
   const key = viewKey(view);
   const rows = tables[key];
@@ -70,7 +73,7 @@ export default function MarketExplorer({
       const data =
         v.type === 'movers' ? await getMarketMovers(v.kind)
         : v.type === 'etfs' ? await getPopularEtfs()
-        : await getSectorScreener(v.id);
+        : await getSectorScreener(v.id, true); // enriched: P/E + target upside
       setTables(t => ({ ...t, [k]: data }));
     } catch {
       setTables(t => ({ ...t, [k]: [] }));
@@ -80,6 +83,10 @@ export default function MarketExplorer({
   }, []);
 
   useEffect(() => {
+    setSortKey(null);
+  }, [key]);
+
+  useEffect(() => {
     if (tables[key] === undefined) void load(view);
   }, [view, key, tables, load]);
 
@@ -87,7 +94,28 @@ export default function MarketExplorer({
     getMarketPulse().then(setPulse).catch(() => {});
   }, []);
 
-  const shown = rows;
+  const shown = useMemo(() => {
+    if (!rows || sortKey === null) return rows;
+    const val = (r: ScreenerRow): number | undefined =>
+      sortKey === 'upside' ? r.targetUpside : sortKey === 'today' ? r.changePct : r.marketCap;
+    return [...rows].sort((a, b) => {
+      const va = val(a);
+      const vb = val(b);
+      if (va === undefined && vb === undefined) return 0;
+      if (va === undefined) return 1;
+      if (vb === undefined) return -1;
+      return vb - va;
+    });
+  }, [rows, sortKey]);
+
+  const sectorTh = (label: string, k: 'upside' | 'today' | 'cap') => (
+    <th className="num-col" aria-sort={sortKey === k ? 'descending' : undefined}>
+      <button className={`th-sort${sortKey === k ? ' active' : ''}`} onClick={() => setSortKey(cur => (cur === k ? null : k))}>
+        {label}
+        {sortKey === k && <ArrowDown size={10} />}
+      </button>
+    </th>
+  );
 
   return (
     <div className="breakdown breakdown-panel discover-panel">
@@ -176,8 +204,9 @@ export default function MarketExplorer({
               <tr>
                 <th>Symbol</th>
                 <th className="num-col">Price</th>
-                <th className="num-col">Today</th>
-                {view.type === 'sector' && <th className="num-col">Market cap</th>}
+                {view.type === 'sector' ? sectorTh('Today', 'today') : <th className="num-col">Today</th>}
+                {view.type === 'sector' && sectorTh('Upside', 'upside')}
+                {view.type === 'sector' && sectorTh('Market cap', 'cap')}
                 <th style={{ width: 64 }}></th>
               </tr>
             </thead>
@@ -204,6 +233,11 @@ export default function MarketExplorer({
                     <td className={`num-col ${gainClass(r.changePct)}`}>
                       {r.changePct !== undefined ? signedPct(r.changePct) : <span className="li-empty">—</span>}
                     </td>
+                    {view.type === 'sector' && (
+                      <td className={`num-col ${gainClass(r.targetUpside)}`}>
+                        {r.targetUpside !== undefined ? signedPct(r.targetUpside) : <span className="li-empty">—</span>}
+                      </td>
+                    )}
                     {view.type === 'sector' && <td className="num-col">{formatCap(r.marketCap)}</td>}
                     <td className="num-col">
                       <button

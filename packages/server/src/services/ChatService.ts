@@ -4,6 +4,14 @@ import { StoreService } from './StoreService';
 import { EmbeddingService } from './EmbeddingService';
 import { buildCustomCategory, slugifyCategory } from './categoryStyle';
 import { loadSnapshot } from './portfolio';
+import {
+  createJobApplication,
+  loadApplicationsSnapshot,
+  moveJobApplication,
+  resolveApplication,
+  resolveStage,
+} from './applications';
+import { JobApplicationInput, WorkMode } from '@stashd/shared';
 
 // Chat uses the same Ollama endpoint/model as classification — the multimodal
 // gemma there supports native tool calling.
@@ -91,6 +99,79 @@ const TOOLS = [
         properties: {
           base: { type: 'string', description: 'Optional 3-letter base currency for the totals (default CAD)' },
         },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_applications',
+      description:
+        "Read the user's job-application tracker: every application with its company, role, current pipeline stage, applied date, days in stage and staleness flag, plus pipeline-wide stats (active count, response rate, interview rate, offers, follow-ups needed). Use for any question about the user's job search, applications, interviews, or offers.",
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'add_application',
+      description:
+        'Track a new job application. Only call when the user explicitly says they applied somewhere or asks to add/record an application.',
+      parameters: {
+        type: 'object',
+        properties: {
+          company: { type: 'string', description: 'The company name' },
+          role: { type: 'string', description: 'The role / job title' },
+          url: { type: 'string', description: 'Job posting URL' },
+          location: { type: 'string' },
+          work_mode: { type: 'string', description: 'remote | hybrid | onsite' },
+          source: { type: 'string', description: 'Where it came from: Referral, LinkedIn, Recruiter…' },
+          compensation: { type: 'string', description: 'Salary / comp info as free text' },
+          applied_date: { type: 'string', description: 'ISO date applied (YYYY-MM-DD); defaults to today' },
+          notes: { type: 'string' },
+        },
+        required: ['company', 'role'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'move_application',
+      description:
+        'Move a job application to another pipeline stage (e.g. mark it Interviewing, Offer, or Rejected). Appends to its status history. Only call when the user explicitly asks to update an application\'s status.',
+      parameters: {
+        type: 'object',
+        properties: {
+          application: { type: 'string', description: 'The application: its company name (or company + role, or id)' },
+          stage: { type: 'string', description: 'The target stage name (see get_applications for the pipeline)' },
+          note: { type: 'string', description: 'Optional note to record with the change' },
+        },
+        required: ['application', 'stage'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'update_application',
+      description:
+        "Edit a job application's fields: notes, compensation, location, URL, source, work mode, applied date, company or role. Cannot change the stage — use move_application for that. Only call when the user explicitly asks for a change.",
+      parameters: {
+        type: 'object',
+        properties: {
+          application: { type: 'string', description: 'The application: its company name (or company + role, or id)' },
+          company: { type: 'string' },
+          role: { type: 'string' },
+          url: { type: 'string' },
+          location: { type: 'string' },
+          work_mode: { type: 'string', description: 'remote | hybrid | onsite' },
+          source: { type: 'string' },
+          compensation: { type: 'string' },
+          applied_date: { type: 'string', description: 'ISO date (YYYY-MM-DD)' },
+          notes: { type: 'string', description: 'Replaces the notes field' },
+        },
+        required: ['application'],
       },
     },
   },
@@ -277,7 +358,7 @@ export class ChatService {
       : '(no projects yet)';
 
     const sections: string[] = [
-      `You are the assistant inside Stashd, a personal document organizer with a cost-tracking section called Ledgers and a stock Portfolio. You answer questions about the user's filed documents, project costs, and investments, and can act on documents with your tools.
+      `You are the assistant inside Stashd, a personal document organizer with a cost-tracking section called Ledgers, a stock Portfolio, and a job-application tracker. You answer questions about the user's filed documents, project costs, investments, and job search, and can act on documents with your tools.
 
 Today's date: ${new Date().toISOString().slice(0, 10)}.
 
@@ -286,6 +367,8 @@ Rules:
 - Cite documents inline using the exact form [doc:<id>] right after the claim it supports, e.g. "the rent is $2,400 [doc:abc-123]". Always cite when you state facts from a document.
 - For money or project questions, use list_projects / read_project to get the figures rather than guessing. Refer to projects by name in your answer.
 - For questions about the user's stocks, holdings, gains, allocation, or watchlist, call get_portfolio and answer from its live figures (never from memory). Say which currency an amount is in.
+- For questions about the user's job search — applications, pipeline stages, interviews, offers, follow-ups — call get_applications and answer from its data.
+- You can also write to the job-application tracker: add_application records a new application, move_application changes an application's pipeline stage (e.g. "mark Shopify as rejected"), and update_application edits its fields/notes. Only do this when the user explicitly asks. After writing, confirm exactly what you changed.
 - You can also write to the ledgers: add_line_item records a cost against a project, and create_project starts a new ledger. Only do this when the user explicitly asks to add/record a cost or create a project. If they ask to log a cost against a project that doesn't exist yet, create it first, then add the line. After writing, confirm exactly what you added.
 - Use search_docs / read_doc freely to investigate. Only call update_doc when the user explicitly asks for a change.
 - Answer in plain conversational prose. Keep it concise.
@@ -463,6 +546,100 @@ ${projectList}`,
               args,
               summary: `Read the portfolio — ${snap.totals.holdingCount} holding${snap.totals.holdingCount === 1 ? '' : 's'}, ${base} ${snap.totals.marketValue.toFixed(0)} market value`,
             },
+          };
+        }
+        case 'get_applications': {
+          const snap = loadApplicationsSnapshot(this.store);
+          const pct = (v?: number) => (v === undefined ? undefined : +(v * 100).toFixed(1));
+          const result = {
+            stats: {
+              total: snap.stats.total,
+              active: snap.stats.active,
+              appliedThisMonth: snap.stats.appliedThisMonth,
+              responseRatePct: pct(snap.stats.responseRate),
+              interviewRatePct: pct(snap.stats.interviewRate),
+              offers: snap.stats.offers,
+              needsFollowUp: snap.stats.needsFollowUp,
+            },
+            pipeline: snap.stages.map(s => `${s.name}${s.isTerminal ? ' (closed)' : ''}`),
+            applications: snap.applications.map(a => ({
+              company: a.company,
+              role: a.role,
+              stage: a.stage?.name ?? a.stageId,
+              applied: a.appliedDate,
+              daysInStage: a.daysInStage,
+              lastActivity: a.lastActivityAt?.slice(0, 10),
+              needsFollowUp: a.stale || undefined,
+              source: a.source,
+              location: a.location,
+              workMode: a.workMode,
+              compensation: a.compensation,
+              notes: a.notes?.slice(0, 200),
+            })),
+          };
+          return {
+            result: JSON.stringify(result),
+            record: {
+              tool: name,
+              args,
+              summary: `Read the job-application pipeline — ${snap.stats.total} application${snap.stats.total === 1 ? '' : 's'}, ${snap.stats.active} active`,
+            },
+          };
+        }
+        case 'add_application': {
+          const company = cleanText(args.company);
+          const role = cleanText(args.role);
+          if (!company || !role) return this.toolError(name, args, 'Both company and role are required');
+          const mode = cleanText(args.work_mode)?.toLowerCase();
+          const app = createJobApplication(this.store, {
+            company,
+            role,
+            url: cleanText(args.url),
+            location: cleanText(args.location),
+            workMode: ['remote', 'hybrid', 'onsite'].includes(mode ?? '') ? (mode as WorkMode) : undefined,
+            source: cleanText(args.source),
+            compensation: cleanText(args.compensation),
+            appliedDate: cleanText(args.applied_date),
+            notes: cleanText(args.notes),
+          });
+          const stageName = this.store.getApplicationStage(app.stageId)?.name ?? app.stageId;
+          return {
+            result: JSON.stringify({ ok: true, application: { id: app.id, company: app.company, role: app.role, stage: stageName, applied: app.appliedDate } }),
+            record: { tool: name, args, summary: `Added application: ${app.company} — ${app.role} (${stageName})` },
+          };
+        }
+        case 'move_application': {
+          const app = resolveApplication(this.store, String(args.application ?? ''));
+          if (!app) return this.toolError(name, args, 'Could not find exactly one matching application — check get_applications and be more specific');
+          const stage = resolveStage(this.store, String(args.stage ?? ''));
+          if (!stage) return this.toolError(name, args, 'Unknown stage — the pipeline stages are listed by get_applications');
+          if (app.stageId === stage.id) return this.toolError(name, args, `${app.company} is already in ${stage.name}`);
+          moveJobApplication(this.store, app.id, stage, cleanText(args.note));
+          return {
+            result: JSON.stringify({ ok: true, application: { company: app.company, role: app.role, stage: stage.name } }),
+            record: { tool: name, args, summary: `Moved ${app.company} — ${app.role} to ${stage.name}` },
+          };
+        }
+        case 'update_application': {
+          const app = resolveApplication(this.store, String(args.application ?? ''));
+          if (!app) return this.toolError(name, args, 'Could not find exactly one matching application — check get_applications and be more specific');
+          const mode = cleanText(args.work_mode)?.toLowerCase();
+          const input: Omit<JobApplicationInput, 'stageId' | 'documentId'> = {};
+          if (cleanText(args.company)) input.company = cleanText(args.company);
+          if (cleanText(args.role)) input.role = cleanText(args.role);
+          if (cleanText(args.url)) input.url = cleanText(args.url);
+          if (cleanText(args.location)) input.location = cleanText(args.location);
+          if (['remote', 'hybrid', 'onsite'].includes(mode ?? '')) input.workMode = mode as WorkMode;
+          if (cleanText(args.source)) input.source = cleanText(args.source);
+          if (cleanText(args.compensation)) input.compensation = cleanText(args.compensation);
+          if (cleanText(args.applied_date)) input.appliedDate = cleanText(args.applied_date);
+          if (cleanText(args.notes)) input.notes = cleanText(args.notes);
+          const changed = Object.keys(input);
+          if (changed.length === 0) return this.toolError(name, args, 'No editable fields were provided');
+          this.store.updateJobApplication(app.id, { ...input, updatedAt: new Date().toISOString() });
+          return {
+            result: JSON.stringify({ ok: true, application: { company: input.company ?? app.company, role: input.role ?? app.role }, changed }),
+            record: { tool: name, args, summary: `Updated the ${app.company} application (${changed.join(', ')})` },
           };
         }
         case 'search_docs': {

@@ -15,6 +15,7 @@ import { createProjectRoutes } from './routes/projects';
 import { createHoldingRoutes } from './routes/holdings';
 import { createWatchlistRoutes } from './routes/watchlist';
 import { createMarketRoutes } from './routes/market';
+import { createApplicationRoutes } from './routes/applications';
 
 interface AppOverrides {
   classificationService?: ClassificationService;
@@ -102,6 +103,7 @@ export async function createApp(dataDir: string, overrides: AppOverrides = {}): 
   app.use('/api/holdings', createHoldingRoutes({ store }));
   app.use('/api/watchlist', createWatchlistRoutes({ store }));
   app.use('/api/market', createMarketRoutes());
+  app.use('/api/applications', createApplicationRoutes({ store }));
 
   return app;
 }

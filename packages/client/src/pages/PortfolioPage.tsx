@@ -1,8 +1,18 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { ArrowDown, ArrowUp, Coins, Compass, Eye, Paperclip, PieChart, Plus, RefreshCw, TrendingUp, X } from 'lucide-react';
-import { HoldingInput, HoldingWithQuote, PortfolioSnapshot, ScreenerRow, WatchlistItemWithQuote } from '@stashd/shared';
-import { addWatchlist, createHolding, deleteHolding, getPortfolio, getWatchlist, removeWatchlist, updateHolding } from '../api';
+import { ArrowDown, ArrowUp, Coins, Compass, Eye, Paperclip, Pencil, PieChart, Plus, RefreshCw, StickyNote, TrendingUp, X } from 'lucide-react';
+import { HoldingInput, HoldingWithQuote, PortfolioHealth, PortfolioSnapshot, ScreenerRow, WatchlistItemWithQuote } from '@stashd/shared';
+import {
+  addWatchlist,
+  createHolding,
+  deleteHolding,
+  getPortfolio,
+  getPortfolioHealth,
+  getWatchlist,
+  removeWatchlist,
+  updateHolding,
+  updateWatchlist,
+} from '../api';
 import { useStore } from '../store';
 import HoldingDialog from '../components/HoldingDialog';
 import EmptyState from '../components/EmptyState';
@@ -10,6 +20,8 @@ import Breakdown, { BreakdownRow } from '../components/Breakdown';
 import Sparkline from '../components/Sparkline';
 import TickerSearch from '../components/TickerSearch';
 import MarketExplorer from '../components/MarketExplorer';
+import RiskPanel from '../components/RiskPanel';
+import WatchlistDialog from '../components/WatchlistDialog';
 import { useTrends } from '../lib/trends';
 import { formatMoney, formatMoneyCell, relTime } from '../lib/format';
 import { gainClass, signedAmount, signedPct } from '../lib/gains';
@@ -78,6 +90,8 @@ export default function PortfolioPage() {
   const navigate = useNavigate();
   const [snap, setSnap] = useState<PortfolioSnapshot | null>(null);
   const [watchlist, setWatchlist] = useState<WatchlistItemWithQuote[]>([]);
+  const [health, setHealth] = useState<PortfolioHealth | null>(null);
+  const [editingWatch, setEditingWatch] = useState<WatchlistItemWithQuote | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -95,6 +109,9 @@ export default function PortfolioPage() {
       const [s, wl] = await Promise.all([getPortfolio(base), getWatchlist().catch(() => [])]);
       setSnap(s);
       setWatchlist(wl);
+      // The risk report crunches a year of closes per holding server-side —
+      // fetched behind the fold so it never delays the tables.
+      if (s.holdings.length >= 2) void getPortfolioHealth(base).then(setHealth).catch(() => {});
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Could not load portfolio', 'err');
     } finally {
@@ -207,6 +224,39 @@ export default function PortfolioPage() {
     () => new Set(watchlist.map(w => w.symbol.trim().toUpperCase())),
     [watchlist],
   );
+
+  // Watchlist grouped by folder (alphabetical; unfiled last). Folder header
+  // rows only render once at least one real folder exists.
+  const watchGroups = useMemo(() => {
+    const m = new Map<string, WatchlistItemWithQuote[]>();
+    for (const w of watchlist) {
+      const f = w.folder?.trim() ?? '';
+      if (!m.has(f)) m.set(f, []);
+      m.get(f)!.push(w);
+    }
+    return [...m.entries()].sort((a, b) =>
+      a[0] === '' ? 1 : b[0] === '' ? -1 : a[0].localeCompare(b[0]),
+    );
+  }, [watchlist]);
+  const watchFolders = useMemo(
+    () => watchGroups.map(([f]) => f).filter(f => f !== ''),
+    [watchGroups],
+  );
+
+  async function saveWatchEdit(values: { folder: string; notes: string }) {
+    if (!editingWatch) return;
+    setBusy(true);
+    try {
+      const updated = await updateWatchlist(editingWatch.id, values);
+      setWatchlist(w => w.map(i => (i.id === updated.id ? { ...i, ...updated } : i)));
+      setEditingWatch(null);
+      notify(`Updated ${updated.symbol}`);
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Could not update', 'err');
+    } finally {
+      setBusy(false);
+    }
+  }
 
   // Allocation: priced holdings by base market value, top slices + a gray
   // "Other" fold (never more than 8 hues), plus a by-currency cut when the
@@ -503,6 +553,12 @@ export default function PortfolioPage() {
               )}
             </div>
           )}
+
+          {health && health.holdings.length >= 2 && (
+            <section className="risk-section rise rise-3">
+              <RiskPanel health={health} />
+            </section>
+          )}
         </>
       )}
 
@@ -539,50 +595,80 @@ export default function PortfolioPage() {
                 </tr>
               </thead>
               <tbody>
-                {watchlist.map(w => (
-                  <tr
-                    key={w.id}
-                    onClick={() => openStock(w.symbol)}
-                    tabIndex={0}
-                    onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openStock(w.symbol))}
-                  >
-                    <td>
-                      <div className="h-sym">
-                        <span className="h-ticker">{w.symbol}</span>
-                        {w.currency && <span className="h-ccy">{w.currency}</span>}
-                        {w.name && <span className="h-name">{w.name}</span>}
-                      </div>
-                    </td>
-                    <td className="spark-col">
-                      <Sparkline points={trends.get(w.symbol.trim().toUpperCase())} />
-                    </td>
-                    <td className="num-col">
-                      {w.currentPrice !== undefined ? formatMoney(w.currentPrice, w.currency ?? 'USD') : <span className="li-empty">—</span>}
-                    </td>
-                    <td className={`num-col ${gainClass(w.dayChange)}`}>
-                      {w.dayChange !== undefined ? (
-                        <>
-                          {signedAmount(w.dayChange, w.currency ?? 'USD')}
-                          <span className="h-sub">{signedPct(w.dayChangePct)}</span>
-                        </>
-                      ) : (
-                        <span className="li-empty">—</span>
-                      )}
-                    </td>
-                    <td className="num-col">
-                      <button
-                        className="watchlist-x"
-                        title="Remove from watchlist"
-                        aria-label="Remove"
-                        onClick={e => {
-                          e.stopPropagation();
-                          removeWatch(w.id);
-                        }}
+                {watchGroups.map(([folder, items]) => (
+                  <Fragment key={folder || '(unfiled)'}>
+                    {watchFolders.length > 0 && (
+                      <tr className="wl-folder-row">
+                        <td colSpan={5}>
+                          {folder || 'Unfiled'}
+                          <span className="wl-folder-count">{items.length}</span>
+                        </td>
+                      </tr>
+                    )}
+                    {items.map(w => (
+                      <tr
+                        key={w.id}
+                        onClick={() => openStock(w.symbol)}
+                        tabIndex={0}
+                        onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), openStock(w.symbol))}
                       >
-                        <X size={13} />
-                      </button>
-                    </td>
-                  </tr>
+                        <td>
+                          <div className="h-sym">
+                            <span className="h-ticker">{w.symbol}</span>
+                            {w.currency && <span className="h-ccy">{w.currency}</span>}
+                            {w.notes && (
+                              <span className="wl-thesis" title={w.notes}>
+                                <StickyNote size={11} />
+                              </span>
+                            )}
+                            {w.name && <span className="h-name">{w.name}</span>}
+                          </div>
+                        </td>
+                        <td className="spark-col">
+                          <Sparkline points={trends.get(w.symbol.trim().toUpperCase())} />
+                        </td>
+                        <td className="num-col">
+                          {w.currentPrice !== undefined ? formatMoney(w.currentPrice, w.currency ?? 'USD') : <span className="li-empty">—</span>}
+                        </td>
+                        <td className={`num-col ${gainClass(w.dayChange)}`}>
+                          {w.dayChange !== undefined ? (
+                            <>
+                              {signedAmount(w.dayChange, w.currency ?? 'USD')}
+                              <span className="h-sub">{signedPct(w.dayChangePct)}</span>
+                            </>
+                          ) : (
+                            <span className="li-empty">—</span>
+                          )}
+                        </td>
+                        <td className="num-col">
+                          <div className="wl-actions">
+                            <button
+                              className="watchlist-x"
+                              title="Folder & thesis note"
+                              aria-label="Edit watch entry"
+                              onClick={e => {
+                                e.stopPropagation();
+                                setEditingWatch(w);
+                              }}
+                            >
+                              <Pencil size={12} />
+                            </button>
+                            <button
+                              className="watchlist-x"
+                              title="Remove from watchlist"
+                              aria-label="Remove"
+                              onClick={e => {
+                                e.stopPropagation();
+                                removeWatch(w.id);
+                              }}
+                            >
+                              <X size={13} />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </Fragment>
                 ))}
               </tbody>
             </table>
@@ -610,6 +696,16 @@ export default function PortfolioPage() {
           onOpenStock={openStock}
         />
       </section>
+
+      {editingWatch && (
+        <WatchlistDialog
+          item={editingWatch}
+          folders={watchFolders}
+          busy={busy}
+          onSave={saveWatchEdit}
+          onClose={() => setEditingWatch(null)}
+        />
+      )}
 
       {(adding || editing) && (
         <HoldingDialog

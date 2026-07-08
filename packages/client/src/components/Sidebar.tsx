@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { NavLink, useLocation, useNavigate, useSearchParams } from "react-router-dom";
-import { BookOpen, ChevronDown, Inbox, Library, Pin, Plus, Search, Sparkles, TrendingUp } from "lucide-react";
+import { BookOpen, Briefcase, ChevronDown, Inbox, Library, Pin, Plus, Search, Sparkles, TrendingUp } from "lucide-react";
 import { useStore } from "../store";
 import Clock from "./Clock";
 import StatusBar from "./StatusBar";
@@ -193,6 +193,10 @@ export default function Sidebar() {
         <NavLink to="/portfolio" className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}>
           <TrendingUp size={15} strokeWidth={1.8} />
           Portfolio
+        </NavLink>
+        <NavLink to="/applications" className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}>
+          <Briefcase size={15} strokeWidth={1.8} />
+          Applications
         </NavLink>
         <NavLink
           to="/chat"

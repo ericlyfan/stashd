@@ -6,10 +6,25 @@ It is the single living document for **Stashd** — both the _operating manual_ 
 verify, and not break things) and the _architecture & feature reference_ (how it all works). Keep this
 file honest and current; it is the project's memory and the first thing agents load.
 
-_Last updated: 2026-07-06 (**Discover expansion + stock-page fill-out**: market-pulse strip, ETFs +
-**Canada (TSX movers)** tabs, Canadian search re-ranking, per-symbol fundamentals + news
-(`/api/market/pulse|etfs|profile|news`), full-width stock detail layout with a heuristic **buy/sell
-Signal card** (`lib/signals.ts`). Prior 2026-07-05: **portfolio overhaul + market discovery** — `/portfolio` now reads as a
+_Last updated: 2026-07-07 (**job applications tracker** — new sidebar section `/applications` (§3e):
+`job_applications` + `application_stages` (customizable pipeline, 5 seeded, `kind` + `is_terminal`
+drive the KPI math) + `application_events` (timestamped status history — stage changes happen only
+via events, never PATCH) + `application_contacts` tables; `routes/applications.ts` +
+`services/applications.ts` (`buildApplicationsSnapshot`, `STALE_DAYS = 14`); **board/kanban view**
+(native DnD, `application/x-stashd-application` MIME) + **sortable table** behind a persisted view
+toggle, 6 KPI tiles (the Needs-follow-up tile doubles as a filter); wide two-pane
+`ApplicationDialog` (form + timeline + contacts), `StageManagerDialog`; chat gains
+**get_applications + gated write tools add/move/update_application** (classic + agentic, shared
+helpers in `services/applications.ts`, page refresh via a `stashd:applications-changed` window event); **`DocumentBrowser` lifted out of `LineItemDialog`**
+into `components/DocumentBrowser.tsx`. Same day, earlier: **portfolio intelligence suite** — `GET /holdings/health` +
+`services/RiskService.ts` (risk stats vs SPY, correlation/concentration/FX/sector warnings, heuristic
+rebalancing hints) rendered by a **Risk & health panel**; `buildSnapshot` extracted to
+`services/portfolio.ts`; chat gains a **get_portfolio tool** (classic + agentic); **news sentiment**
+lexicon dots; **insider activity** card (`/api/market/insiders/:symbol`); sector screener
+**value-enrichment** (`?enrich=1` → analyst-target upside column, sortable); **watchlist folders +
+thesis notes** (`folder` column migration, `PATCH /watchlist/:id`, grouped table + edit dialog).
+Prior 2026-07-06: Discover expansion (pulse strip, ETFs + Canada tabs, fundamentals + news, full-width
+stock page, Signal card `lib/signals.ts`). Prior 2026-07-05: **portfolio overhaul + market discovery** — `/portfolio` now reads as a
 holdings dashboard: **allocation panel** (shared `components/Breakdown.tsx`, top-8 + gray "Other",
 by-holding / by-currency tabs), **sortable holdings columns**, **30-day sparklines**
 (`components/Sparkline.tsx` + `lib/trends.ts`, `GET /holdings/history/:symbol?days=N`), helpers
@@ -50,12 +65,13 @@ multimodal LLM on _your own_ Ollama instance reads each one and proposes a filin
 summary, key dates, amount, vendor — and you approve or correct it before it lands in "the stash."
 Nothing leaves the machine except the call to your configured Ollama endpoint.
 
-Four feature pillars beyond filing:
+Five feature pillars beyond filing:
 
 - **Search** — FTS5 full-text over document bodies, with match-aware snippets.
 - **Ask the stash** (`/chat`) — RAG chat with citations and a native tool loop that can act on the stash.
 - **Ledgers** (`/ledgers`) — project cost tracking, optionally linked to stash documents.
 - **Portfolio** (`/portfolio`) — stock-holdings tracker with live prices and gain/loss, optionally linked to stash documents.
+- **Applications** (`/applications`) — job-application pipeline tracker (kanban + table, customizable stages, timestamped status history), optionally linked to stash documents.
 
 **Accepted file types** — single source of truth is `MIME_BY_EXT` in `shared/src/category.ts`
 (exposed as `SUPPORTED_EXTENSIONS` / `isSupportedFilename`): `pdf`, `jpg/jpeg`, `png`, `heic/heif`,
@@ -79,7 +95,7 @@ npm-workspaces monorepo; three packages under `packages/`.
 
 - `app.ts` — wires services + routes; runs boot backfills. `index.ts` — listen loop.
 - `routes/` — `documents.ts`, `categories.ts`, `chat.ts`, `projects.ts`, `holdings.ts`,
-  `watchlist.ts`, `market.ts` (one router factory each).
+  `watchlist.ts`, `market.ts`, `applications.ts` (one router factory each).
 - `services/`
   - `StoreService.ts` — **all SQLite access** (better-sqlite3, WAL). Schema, migrations, queries.
   - `FileService.ts` — file storage under `data/documents/<slug>/` and `data/temp/<jobId>/`.
@@ -92,6 +108,9 @@ npm-workspaces monorepo; three packages under `packages/`.
   - `FxService.ts` — foreign-exchange rates (`fetchRates`, Frankfurter → open.er-api → stale → identity) for multi-currency portfolio totals, no key, cached ~1h, failure-tolerant.
   - `MarketService.ts` — market discovery, no key, cached, failure-tolerant: `searchSymbols` (Nasdaq autocomplete for US + the TSX company directory for Canadian, ".TO"-suffixed and re-ranked exact-symbol → companies → ETF wrappers, since the directory ranks Shopify-themed ETFs above Shopify Inc.), `screenSector` (Nasdaq screener, 11 sector tokens), `marketMovers` (US most active / gainers / losers via Nasdaq, plus `canada` = TSX most-active via TMX `getMarketMovers`), `marketPulse` (index-proxy ETFs via `fetchQuotes`), `popularEtfs` (curated shelf, priced live), `stockProfile` (Nasdaq quote-summary / TMX GraphQL fundamentals), `stockNews` (Nasdaq per-symbol RSS, regex-parsed + entity-decoded / TMX news).
   - `positions.ts` — average-cost position accounting from a holding's lots (`derivePosition`).
+  - `portfolio.ts` — snapshot assembly (`buildSnapshot` pure, `loadSnapshot` fetches store + quotes + FX), shared by the holdings route, RiskService, and the chat get_portfolio tool.
+  - `RiskService.ts` — `buildHealthReport(snapshot)`: per-holding + portfolio risk stats from 1y closes vs SPY (vol/beta/Sharpe rf-0/max drawdown), pairwise correlations, concentration/FX/sector warnings (thresholds are consts up top), heuristic trim suggestions. Cached ~10min.
+  - `applications.ts` — job-application snapshot assembly (`buildApplicationsSnapshot` pure, `loadApplicationsSnapshot` fetches the store): per-application enrichment (resolved stage, last activity, days-in-stage, staleness) + pipeline KPI stats, all derived from the event history; shared by the applications route and the chat get_applications tool. `STALE_DAYS = 14` is the follow-up threshold.
   - `categoryStyle.ts` — auto icon/color for new categories.
 - `providers/` — model-provider registry keyed by `PROVIDER`; `OllamaProvider` is the only impl.
 - `agentic/` — standalone experimental document agent loop (`glm-4.7:cloud` by default) with swappable
@@ -369,7 +388,18 @@ tags, flag/unflag; only on explicit user request), `list_categories`, plus the L
 `list_projects` / `read_project` (read) and `create_project` / `add_line_item` (**write** — record a
 cost against a project, creating the ledger first if needed; gated on explicit user request in the
 prompt, same as `update_doc`; `add_line_item` resolves the project by id/name and defaults
-`totalPaid = amountPaid + taxAmount` when omitted, mirroring the line-item dialog) (see §3c). A
+`totalPaid = amountPaid + taxAmount` when omitted, mirroring the line-item dialog) (see §3c), plus
+**`get_portfolio`** (read — the live-priced portfolio snapshot via `services/portfolio.ts
+loadSnapshot`: holdings with weights/returns in native currency, base-currency totals (default CAD),
+and the watchlist with folders + thesis notes; `executeTool` is async for this one), plus
+**`get_applications`** (read — the job-application pipeline via `services/applications.ts
+loadApplicationsSnapshot`: KPI stats, the stage list, and every application with its stage,
+days-in-stage and staleness flag) and the application **write** tools `add_application` /
+`move_application` (stage change → appends a status event, never a direct write) /
+`update_application` (fields/notes; cannot move stages) — same explicit-user-request gating as the
+ledger writes; applications/stages are resolved by loose reference (`resolveApplication` /
+`resolveStage` in `services/applications.ts` — id, unique id prefix, or unique company/name match;
+ambiguity refuses rather than guesses). A
 ledger-write tool triggers a client `refresh()` just like `update_doc`. Answers cite inline as `[doc:<id>]`; the server parses
 these into `citations` (id + name, surviving later doc deletion) and persists tool calls as
 human-readable records. History sent to the model is capped at the last 20 messages.
@@ -436,7 +466,10 @@ reaches parity with the classic chat: document tools (`search_docs`, `read_doc`,
 and `update_doc` — re-categorize / tag / flag, gated on explicit user request in the system prompt) and
 ledger tools (`list_projects`, `read_project`, including optional line-item filtering such as project
 `4190` + query `Costco`, plus the **write** tools `create_project` / `add_line_item` — same gating and
-`totalPaid` defaulting as classic). Document tools go through the `AgentDocumentCorpus` seam: `StoreDocumentCorpus`
+`totalPaid` defaulting as classic), the portfolio read tool (`get_portfolio`,
+`agentic/PortfolioAgentTools.ts`) and the application tools (`agentic/ApplicationAgentTools.ts`:
+`get_applications` read + the gated writes `add_application` / `move_application` /
+`update_application` — same shared action/resolution helpers as classic). Document tools go through the `AgentDocumentCorpus` seam: `StoreDocumentCorpus`
 adapts the real `StoreService` (and resolves a truncated/prefix doc id the way citations do), while
 `FixtureDocumentCorpus` supports standalone smoke tests without a database or live model.
 `AgenticChatService` wraps this loop with normal chat persistence, pinned-doc context, a lightweight
@@ -464,8 +497,8 @@ sets for `<datalist>` autocomplete and for the **by-category / by-vendor** break
 (requested / paid / tax / total) are computed per request in `StoreService.sumTotals`, never stored.
 
 **Document links are bidirectional.** A line item may link one stash document as supporting evidence,
-chosen from the `LineItemDialog`'s **full-window document browser** (`DocumentBrowser` in
-`components/LineItemDialog.tsx`): a search box (name/vendor/folder/tag/summary), a left folder rail
+chosen from a **full-window document browser** (`components/DocumentBrowser.tsx`, shared by
+`LineItemDialog` and the job-application dialog): a search box (name/vendor/folder/tag/summary), a left folder rail
 that filters by drawer, and a scrollable list showing each document's full (two-line-clamped) name,
 folder, vendor, date and amount. It opens from the "link a document" trigger or the "Change" button on
 an existing link. (The chat's pin picker still uses the compact `.pin-pop` popover.) The document page shows a **"Cited in
@@ -612,10 +645,29 @@ discovery row navigates to `/portfolio/:symbol`.
 **Watchlist** (`watchlist` table; `routes/watchlist.ts` mounted at `/api/watchlist`): stocks you follow
 but don't own. `GET /watchlist` returns items enriched with live quotes (native currency, day change);
 `POST /watchlist { symbol }` is idempotent (returns the existing item on a duplicate symbol);
-`DELETE /watchlist/:id`. Surfaced as a **section below the holdings table** on `/portfolio` — a
-`TickerSearch` typeahead to add (suggestions as you type; Enter falls back to the raw ticker) and a
-compact table (symbol · 30d sparkline · price · today), rows linking to the stock page, each with a
-remove ×. Independent of holdings (no positions).
+`PATCH /watchlist/:id` (name / thesis `notes` / `folder`), `DELETE /watchlist/:id`. Surfaced as a
+**section below the holdings table** on `/portfolio` — a `TickerSearch` typeahead to add (suggestions
+as you type; Enter falls back to the raw ticker) and a compact table (symbol · 30d sparkline · price ·
+today), **grouped by folder** once any entry has one (folder header rows; unfiled last), each row with
+a pencil (opens `components/WatchlistDialog.tsx` — folder input with datalist of existing folders +
+free-form **thesis note**; a sticky-note icon with a tooltip marks noted rows) and a remove ×. The
+stock page shows the thesis in a "Watch thesis" card. Independent of holdings (no positions).
+
+**Risk & health** (`GET /holdings/health?base=` → `PortfolioHealth`, `services/RiskService.ts`,
+rendered by `components/RiskPanel.tsx` below the holdings table when ≥2 priced holdings — fetched
+behind the fold, never blocking): five stat tiles (annualized **volatility**, **beta vs SPY**,
+**Sharpe (rf 0)**, **max drawdown**, 1y return) computed from 1y of daily closes with the portfolio
+series as a current-weight blend (disclosed as an approximation); **warnings** for near-lockstep pairs
+(ρ ≥ 0.85, both legs ≥ 5%), single positions > 25%, top-3 > 65%, non-base FX exposure > 75%, and
+sector weight > 45% (via cached profiles; funds without a sector are skipped); heuristic **trim
+suggestions** with base-currency amounts; a per-holding risk table and most-correlated chips. All
+thresholds are consts at the top of RiskService. **News sentiment**: `NewsItem.sentiment` is a simple
+server-side lexicon read of the headline, rendered as a quiet colored dot in the stock page's news
+card. **Insider activity** (`GET /market/insiders/:symbol`, US only): open-market buys/sells (3m/12m)
++ net-posture chip in a stock-page rail card. **Value screen**: the Discover sector view fetches
+`?enrich=1` and shows a sortable analyst-target **Upside** column (Nasdaq's $0-target "no coverage"
+placeholder is filtered; the summary API carries no P/E for US stocks, so there is deliberately no P/E
+column).
 
 **UI** (`pages/PortfolioPage.tsx`, `components/HoldingDialog.tsx`): the page fetches its
 `PortfolioSnapshot` + watchlist. Top-down it shows: a four-tile KPI strip with colored accent stripes
@@ -644,6 +696,89 @@ listings, and — when editing — a **Transactions**/`LotsEditor` section). Lea
 blank to auto-fetch or set it to override; the same search-popover the ledgers/chat use attaches a
 supporting document. Deleting a document nulls any holding link inside `removeDocument`'s transaction
 (alongside the ledger links), so it dangles harmlessly.
+
+## 3e. Applications — job-application pipeline
+
+A standalone section (sidebar entry **Applications**, `/applications`) tracking job applications
+through a customizable pipeline. Like Ledgers/Portfolio it's independent of the document organizer,
+connecting only through an optional one-way link (an application → a supporting stash document, e.g.
+the resume sent, the JD, an offer letter — nulled in `removeDocument`'s transaction on delete).
+
+**Model** (4 tables, plain SQLite — no FTS/vec):
+
+- **`application_stages`** — the pipeline itself, fully user-customizable (name, `color`, 1-based
+  `position` = board-column order). Two semantic fields keep the stats meaningful across renames:
+  **`kind`** (`applied | screen | interview | offer | rejected | withdrawn`) is what the KPI math
+  reads, and **`is_terminal`** stages don't count as "active". Seeded once into an empty table
+  (Applied · Interviewing · Offer · Accepted · Rejected, fixed slug ids — trimmed from an initial
+  7 on 2026-07-07, by request);
+  delete is blocked while applications sit in a stage (400 with count) and for the last remaining
+  stage. Reorder mirrors the categories pattern (`PATCH /applications/stages/reorder { ids }`).
+- **`job_applications`** — company + role (required), url, location, `work_mode`
+  (`remote|hybrid|onsite`), job `description` (freeform JD text), `source` (free text; the dialog
+  offers a datalist of defaults + previously-used values, the ledger-vendor approach),
+  `compensation` (deliberately freeform text), `stage_id` (the **denormalized head of the event
+  history**), `applied_date`, `document_id`, notes.
+- **`application_events`** — the timestamped status history. **Stage changes only happen by
+  appending an event** (`POST /applications/:id/events`; the application PATCH deliberately cannot
+  move stages), so "how long did each stage take" is always answerable. `stage_name` is snapshotted
+  so history survives stage renames/deletes. Events are backdatable and editable/deletable; after
+  any event mutation the current stage **re-aligns to whichever event is now latest** (an event
+  delete = undo of a mis-drag). Creating an application writes the opening event dated to the
+  applied date — **clamped to now** (noon UTC of "today" is hours in the future for anyone west of
+  Greenwich, and a future-dated opening event out-sorts every later stage change, snapping the
+  application back on every drag; hit and fixed 2026-07-07). For the same reason the client's
+  applied-date default uses the *local* calendar day (`toLocaleDateString('en-CA')`), never an ISO
+  slice. Cascade-deleted with the application.
+- **`application_contacts`** — recruiters/hiring managers/referrers per application (name required;
+  title, email, url, notes). Cascade-deleted with the application.
+
+**Chat integration**: `get_applications` (read) plus `add_application` / `move_application` /
+`update_application` (writes, explicit-request-gated) exist in **both** chat engines; the action +
+loose-resolution logic lives in `services/applications.ts` (`createJobApplication`,
+`moveJobApplication`, `realignApplicationStage`, `resolveApplication`, `resolveStage`) and the HTTP
+route delegates to the same helpers. Client-side, a chat write dispatches a
+`stashd:applications-changed` window event (see `APP_WRITE_TOOLS` in `ChatSurface.tsx`) that
+`ApplicationsPage` listens for — the page owns its data, so the global-store `refresh()` used by
+document/ledger writes can't reach it. **Add any new application write tool to that array too.**
+
+**Snapshot & KPIs** (`services/applications.ts`, shared by the route and the chat tools): every read
+goes through `buildApplicationsSnapshot` → enriched applications (resolved `stage`, `lastActivityAt`
+= latest event, `daysInStage`, `eventCount`/`contactCount`, `stale`) + stats, all computed per
+request from the event history, never stored. **Active** = current stage not terminal. **Response
+rate** = ever entered a `screen/interview/offer/rejected`-kind stage ÷ total (a rejection is a
+response; a withdrawal/ghost isn't). **Interview rate** = ever entered `interview/offer` ÷ total.
+**Offers** = ever entered an `offer` kind. **Needs follow-up** = active with no event for
+`STALE_DAYS` (14) — surfaced as the amber sixth KPI tile, per-row/card warning markers, and the
+tile itself toggles a stale-only filter.
+
+**UI** (`pages/ApplicationsPage.tsx`): page-local data (the PortfolioPage model — `load()` +
+`notify`, nothing in the global store). Top-down: header with a persisted **Board | Table view
+toggle** (`localStorage stashd.applicationsView`), a **Stages** button (`StageManagerDialog` —
+inline rename, 12-swatch color picker, kind select with KPI-meaning labels, terminal checkbox, ↑/↓
+reorder, add/delete) and **Add application**; a six-tile KPI strip (`.stats portfolio-stats
+app-stats` — reuses the portfolio accent-stripe idiom); a **filter bar** (text search over
+company/role/notes/source/location/comp, per-stage toggle chips with live counts, applied-date range
+select) feeding both views.
+
+- **Board** (`components/ApplicationBoard.tsx`): horizontally scrolling columns per stage in
+  position order, cards drag between columns via native HTML5 DnD with its own MIME
+  (`application/x-stashd-application`, the sidebar-drawer pattern — never collides with document
+  drags or the drop curtain). A drop moves optimistically, POSTs the event, then reconciles with a
+  reload. Terminal columns render muted. Cards: company · role · applied date · days-in-stage ·
+  stale warning · paperclip/note/contact-count glyphs.
+- **Table**: dense `.li-table` with click-to-sort headers (the holdings `SortTh` pattern; default
+  last-activity desc, unknowns sink): Company · Role · Stage (colored dot) · Applied · In stage ·
+  Last activity · Source · Location (+ work-mode tag) · Comp · glyphs. Row click opens the dialog.
+- **`components/ApplicationDialog.tsx`** — a **wide two-pane dialog** (`.app-dialog-wide`,
+  ~880px, the li-dialog head/body/foot structure): the full form up top (company/role/url/location/
+  work-mode/source/comp/applied-date/stage select, a collapsible `<details>` JD textarea, notes,
+  document link via the shared `DocumentBrowser`), and — when editing — **Timeline | Contacts**
+  panes side by side. The dialog owns the event/contact sub-CRUD (refetching its own detail and
+  pinging the page via `onMutated`); the parent owns main save/delete. **A stage change in the form
+  is translated by the page into an event POST** — `updateApplication` never carries `stageId`.
+  Timeline rows show stage dot/name/date, the computed days spent in each stage, and per-event
+  date/note edit + delete.
 
 ## 4. Categories ("drawers")
 
@@ -764,6 +899,7 @@ Components call API functions from `api.ts` directly and then `refresh()`.
 | `DELETE /projects/:id/items/:itemId`             | delete a line item                                                                                                   |
 | `GET /projects/by-document/:docId`               | line items linking a given document (the document → ledger direction)                                                |
 | `GET /holdings?base=CAD`                         | the whole portfolio: holdings (native currency) + returns from lots, plus rollups converted to `base` (`PortfolioSnapshot`; default base USD) |
+| `GET /holdings/health?base=CAD`                  | risk & health report (`PortfolioHealth`): 1y risk stats vs SPY, correlations, concentration/FX/sector warnings, trim suggestions (declared before `/:id`) |
 | `GET /holdings/history/:symbol?days=N`           | one stock's live quote + daily-close series (`StockHistory`, native currency; declared before `/:id`); `?days` trims to the last N calendar days (sparklines); empty `points` w/o history |
 | `POST /holdings`                                 | add a holding `{ symbol, name?, shares?, buyPrice?, manualPrice?, documentId?, notes? }` (400 without a symbol)       |
 | `PATCH /holdings/:id`                            | partial-update a holding (`documentId: null` clears the link)                                                        |
@@ -773,10 +909,25 @@ Components call API functions from `api.ts` directly and then `refresh()`.
 | `PATCH /holdings/:id/lots/:lotId`                | partial-update a lot                                                                                                |
 | `DELETE /holdings/:id/lots/:lotId`               | delete a lot                                                                                                        |
 | `GET /watchlist`                                 | watched stocks enriched with live quotes (`WatchlistItemWithQuote[]`, native currency)                              |
-| `POST /watchlist`                                | add a watched symbol `{ symbol, name?, notes? }` (idempotent — returns the existing item on a duplicate)            |
+| `POST /watchlist`                                | add a watched symbol `{ symbol, name?, notes?, folder? }` (idempotent — returns the existing item on a duplicate)   |
+| `PATCH /watchlist/:id`                           | edit a watch entry's `name` / `notes` (thesis) / `folder` ("" clears a field)                                       |
 | `DELETE /watchlist/:id`                          | remove a watched stock                                                                                             |
+| `GET /applications`                              | the whole tracker: enriched applications + pipeline stages + KPI stats (`ApplicationsSnapshot`)                     |
+| `POST /applications`                             | create an application `{ company, role, … }` (400 without both); writes the opening status event at the applied date |
+| `GET /applications/:id`                          | detail: enriched application + events (newest first) + contacts (`ApplicationDetail`)                               |
+| `PATCH /applications/:id`                        | partial-update the fields (`documentId: null` clears the link; **cannot** move stages — use events)                 |
+| `DELETE /applications/:id`                       | delete + cascade its events and contacts                                                                            |
+| `POST /applications/:id/events`                  | move to a stage `{ stageId, note?, occurredAt? }` — appends history, re-aligns current stage (the board-drag endpoint) |
+| `PATCH /applications/:id/events/:eventId`        | fix an event's date/note (stage re-aligns to the latest event)                                                      |
+| `DELETE /applications/:id/events/:eventId`       | undo a mis-drag; stage re-aligns to the remaining latest event                                                      |
+| `POST /applications/:id/contacts` / `PATCH …/:contactId` / `DELETE …/:contactId` | contact CRUD (name required on create)                                                            |
+| `POST /applications/stages`                      | add a pipeline stage `{ name, color?, kind?, isTerminal? }` (color auto-cycles the palette)                         |
+| `PATCH /applications/stages/reorder`             | persist pipeline order `{ ids }` (declared before `stages/:id`)                                                     |
+| `PATCH /applications/stages/:id`                 | rename / recolor / re-kind / toggle terminal (all `/stages` routes declared before `/:id`)                          |
+| `DELETE /applications/stages/:id`                | delete a stage (400 while occupied or if it's the last one)                                                         |
 | `GET /market/search?q=`                          | ticker/company typeahead → `SymbolSuggestion[]` (US via Nasdaq autocomplete, Canadian via TSX directory, ".TO"-suffixed; empty on outage) |
-| `GET /market/screener?sector=technology`         | top-of-sector US stocks by market cap → `ScreenerRow[]` (11 sector tokens; `GET /market/sectors` lists them)       |
+| `GET /market/screener?sector=technology&enrich=1`| top-of-sector US stocks by market cap → `ScreenerRow[]` (11 sector tokens; `GET /market/sectors` lists them); `enrich` adds analyst-target upside per row |
+| `GET /market/insiders/:symbol`                   | insider open-market activity summary (`InsiderActivity`; US only, null otherwise)                                   |
 | `GET /market/movers?kind=active\|gainers\|losers\|canada`| today's movers → `ScreenerRow[]` (US via Nasdaq; `canada` = TSX most-active via TMX, ".TO"-suffixed, CAD)   |
 | `GET /market/pulse`                              | index-proxy tiles (S&P/Nasdaq/Dow/Russell/TSX via SPY/QQQ/DIA/IWM/XIC.TO) → `PulseItem[]`                          |
 | `GET /market/etfs`                               | curated popular-ETFs shelf, priced live (US + Canadian, native currency) → `ScreenerRow[]`                          |

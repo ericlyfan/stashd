@@ -576,3 +576,139 @@ export interface HoldingInput {
   documentId?: string | null;
   notes?: string;
 }
+
+// ── Job applications ─────────────────────────────────────────────────────────
+// A pipeline tracker for job applications: customizable stages, a timestamped
+// status history (so stage durations are visible), contacts, and an optional
+// link to a supporting stash document (resume, JD, offer letter).
+
+// The semantic bucket a stage belongs to — this is what the KPI math reads, so
+// renaming/adding stages never breaks the stats. A rejection counts as a
+// response; a withdrawal doesn't.
+export type StageKind = "applied" | "screen" | "interview" | "offer" | "rejected" | "withdrawn";
+
+export interface ApplicationStage {
+  id: string;
+  name: string;
+  // Board column order, 1-based.
+  position: number;
+  color: string;
+  kind: StageKind;
+  // Terminal stages (Accepted / Rejected / Withdrawn) don't count as "active".
+  isTerminal: boolean;
+}
+
+export type WorkMode = "remote" | "hybrid" | "onsite";
+
+export interface JobApplication {
+  id: string;
+  company: string;
+  role: string;
+  url?: string;
+  location?: string;
+  workMode?: WorkMode;
+  // Job description, freeform text.
+  description?: string;
+  // Where it came from (Referral, LinkedIn, Recruiter, …). Free text — the UI
+  // offers a datalist of common + previously-used values, like ledger vendors.
+  source?: string;
+  // Freeform comp info ("180–220k CAD + equity") — deliberately unstructured.
+  compensation?: string;
+  // Current stage — the denormalized head of the event history.
+  stageId: string;
+  appliedDate?: string; // YYYY-MM-DD
+  // Optional supporting stash document. Nulled if that document is deleted.
+  documentId?: string;
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// Fields a client may set; the server owns id / timestamps, and the stage is
+// changed via the events endpoint (not PATCH) so history stays truthful.
+// `documentId: null` explicitly clears the link.
+export interface JobApplicationInput {
+  company?: string;
+  role?: string;
+  url?: string;
+  location?: string;
+  workMode?: WorkMode | null;
+  description?: string;
+  source?: string;
+  compensation?: string;
+  stageId?: string; // honored on create only
+  appliedDate?: string;
+  documentId?: string | null;
+  notes?: string;
+}
+
+// One entry of an application's status history. `stageName` is a snapshot so
+// history survives a stage being renamed or deleted (`stageId` may dangle).
+export interface ApplicationEvent {
+  id: string;
+  applicationId: string;
+  stageId?: string;
+  stageName: string;
+  occurredAt: string; // ISO; defaults to now, backdatable
+  note?: string;
+}
+
+export interface ApplicationContact {
+  id: string;
+  applicationId: string;
+  name: string;
+  title?: string; // e.g. "Recruiter", "Hiring manager"
+  email?: string;
+  url?: string; // e.g. LinkedIn profile
+  notes?: string;
+  createdAt: string;
+}
+
+// An application enriched with per-request derived fields (from its events).
+export interface EnrichedApplication extends JobApplication {
+  stage?: ApplicationStage; // resolved current stage
+  lastActivityAt?: string; // latest event timestamp
+  daysInStage?: number; // days since the latest event
+  eventCount: number;
+  contactCount: number;
+  // Active and no event for STALE_DAYS+ — needs a follow-up.
+  stale: boolean;
+}
+
+// Pipeline-wide rollups, computed per request from the event history — never
+// persisted. Rates are fractions (0..1); undefined when there's no denominator.
+export interface ApplicationStats {
+  total: number;
+  active: number;
+  appliedThisMonth: number;
+  responseRate?: number; // ever reached screen/interview/offer/rejected ÷ total
+  interviewRate?: number; // ever reached interview/offer ÷ total
+  offers: number; // ever reached an offer-kind stage
+  needsFollowUp: number; // active + stale
+}
+
+export interface ApplicationsSnapshot {
+  applications: EnrichedApplication[];
+  stages: ApplicationStage[];
+  stats: ApplicationStats;
+}
+
+export interface ApplicationDetail extends EnrichedApplication {
+  events: ApplicationEvent[]; // newest first
+  contacts: ApplicationContact[];
+}
+
+export interface ApplicationContactInput {
+  name?: string;
+  title?: string;
+  email?: string;
+  url?: string;
+  notes?: string;
+}
+
+export interface ApplicationStageInput {
+  name?: string;
+  color?: string;
+  kind?: StageKind;
+  isTerminal?: boolean;
+}

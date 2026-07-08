@@ -362,7 +362,8 @@ async function nasdaqProfile(symbol: string): Promise<StockProfile | null> {
       dividendYield: parsePct(v('Yield')),
       annualizedDividend: parseNum(v('AnnualizedDividend')),
       exDividendDate: v('ExDividendDate') === 'N/A' ? undefined : v('ExDividendDate'),
-      oneYearTarget: parseNum(v('OneYrTarget')),
+      // A $0 target is Nasdaq's "no coverage" placeholder, not a real target.
+      oneYearTarget: (t => (t && t > 0 ? t : undefined))(parseNum(v('OneYrTarget'))),
       volume: parseNum(v('ShareVolume')),
       avgVolume: parseNum(v('AverageVolume')),
       currency: 'USD',

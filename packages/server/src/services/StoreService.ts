@@ -25,6 +25,15 @@ import {
   HoldingLot,
   HoldingLotInput,
   WatchlistItem,
+  ApplicationStage,
+  ApplicationStageInput,
+  ApplicationContact,
+  ApplicationContactInput,
+  ApplicationEvent,
+  JobApplication,
+  JobApplicationInput,
+  StageKind,
+  WorkMode,
 } from '@stashd/shared';
 import {
   hammingHex,
@@ -40,6 +49,17 @@ const SNIP_CLOSE = '\u0003';
 
 const DEFAULT_CATEGORIES: Category[] = [
   { id: 'other', name: 'Other', icon: 'folder', color: '#a8a29e', isCustom: false, pinned: false, position: 0 },
+];
+
+// Seed pipeline for the job-applications tracker (only inserted into an empty
+// application_stages table). All of it is user-editable afterwards; the fixed
+// slug ids just make a fresh database predictable. Colors from COLOR_PALETTE.
+const DEFAULT_APPLICATION_STAGES: ApplicationStage[] = [
+  { id: 'applied', name: 'Applied', position: 1, color: '#64748b', kind: 'applied', isTerminal: false },
+  { id: 'interviewing', name: 'Interviewing', position: 2, color: '#6366f1', kind: 'interview', isTerminal: false },
+  { id: 'offer', name: 'Offer', position: 3, color: '#f59e0b', kind: 'offer', isTerminal: false },
+  { id: 'accepted', name: 'Accepted', position: 4, color: '#10b981', kind: 'offer', isTerminal: true },
+  { id: 'rejected', name: 'Rejected', position: 5, color: '#ef4444', kind: 'rejected', isTerminal: true },
 ];
 
 interface DocumentRow {
@@ -257,6 +277,108 @@ function rowToWatchlistItem(row: WatchlistRow): WatchlistItem {
   };
 }
 
+interface ApplicationStageRow {
+  id: string;
+  name: string;
+  position: number;
+  color: string;
+  kind: string;
+  is_terminal: number;
+}
+
+function rowToApplicationStage(row: ApplicationStageRow): ApplicationStage {
+  return {
+    id: row.id,
+    name: row.name,
+    position: row.position,
+    color: row.color,
+    kind: row.kind as StageKind,
+    isTerminal: !!row.is_terminal,
+  };
+}
+
+interface JobApplicationRow {
+  id: string;
+  company: string;
+  role: string;
+  url: string | null;
+  location: string | null;
+  work_mode: string | null;
+  description: string | null;
+  source: string | null;
+  compensation: string | null;
+  stage_id: string;
+  applied_date: string | null;
+  document_id: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+function rowToJobApplication(row: JobApplicationRow): JobApplication {
+  return {
+    id: row.id,
+    company: row.company,
+    role: row.role,
+    url: row.url ?? undefined,
+    location: row.location ?? undefined,
+    workMode: (row.work_mode as WorkMode | null) ?? undefined,
+    description: row.description ?? undefined,
+    source: row.source ?? undefined,
+    compensation: row.compensation ?? undefined,
+    stageId: row.stage_id,
+    appliedDate: row.applied_date ?? undefined,
+    documentId: row.document_id ?? undefined,
+    notes: row.notes ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+interface ApplicationEventRow {
+  id: string;
+  application_id: string;
+  stage_id: string | null;
+  stage_name: string;
+  occurred_at: string;
+  note: string | null;
+}
+
+function rowToApplicationEvent(row: ApplicationEventRow): ApplicationEvent {
+  return {
+    id: row.id,
+    applicationId: row.application_id,
+    stageId: row.stage_id ?? undefined,
+    stageName: row.stage_name,
+    occurredAt: row.occurred_at,
+    note: row.note ?? undefined,
+  };
+}
+
+interface ApplicationContactRow {
+  id: string;
+  application_id: string;
+  name: string;
+  title: string | null;
+  email: string | null;
+  url: string | null;
+  notes: string | null;
+  created_at: string;
+}
+
+function rowToApplicationContact(row: ApplicationContactRow): ApplicationContact {
+  return {
+    id: row.id,
+    applicationId: row.application_id,
+    name: row.name,
+    title: row.title ?? undefined,
+    email: row.email ?? undefined,
+    url: row.url ?? undefined,
+    notes: row.notes ?? undefined,
+    createdAt: row.created_at,
+  };
+}
+
 function sumTotals(items: LineItem[]): ProjectTotals {
   return items.reduce<ProjectTotals>(
     (acc, it) => ({
@@ -309,6 +431,9 @@ export class StoreService {
     this.migrateFromManifest();
     if ((this.db.prepare('SELECT COUNT(*) AS n FROM categories').get() as { n: number }).n === 0) {
       for (const cat of DEFAULT_CATEGORIES) this.addCategory(cat);
+    }
+    if ((this.db.prepare('SELECT COUNT(*) AS n FROM application_stages').get() as { n: number }).n === 0) {
+      for (const stage of DEFAULT_APPLICATION_STAGES) this.addApplicationStage(stage);
     }
   }
 
@@ -563,6 +688,68 @@ export class StoreService {
         created_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_watchlist_symbol ON watchlist(symbol);
+
+      -- Job applications: a pipeline tracker. Stages are user-customizable;
+      -- 'kind' is the semantic bucket the KPI math reads (so renames never
+      -- break the stats) and terminal stages don't count as active.
+      CREATE TABLE IF NOT EXISTS application_stages (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        position INTEGER NOT NULL DEFAULT 0,
+        color TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'screen',
+        is_terminal INTEGER NOT NULL DEFAULT 0
+      );
+
+      -- The applications themselves. stage_id is the denormalized head of the
+      -- event history; document_id is a nullable, advisory link to a supporting
+      -- stash document (resume, JD, offer letter).
+      CREATE TABLE IF NOT EXISTS job_applications (
+        id TEXT PRIMARY KEY,
+        company TEXT NOT NULL,
+        role TEXT NOT NULL,
+        url TEXT,
+        location TEXT,
+        work_mode TEXT,
+        description TEXT,
+        source TEXT,
+        compensation TEXT,
+        stage_id TEXT NOT NULL,
+        applied_date TEXT,
+        document_id TEXT,
+        notes TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_job_applications_stage ON job_applications(stage_id);
+      CREATE INDEX IF NOT EXISTS idx_job_applications_document ON job_applications(document_id);
+
+      -- Timestamped status history: one row per stage entry. stage_name is a
+      -- snapshot so history survives stage renames/deletes (stage_id may
+      -- dangle). Deleted with the application.
+      CREATE TABLE IF NOT EXISTS application_events (
+        id TEXT PRIMARY KEY,
+        application_id TEXT NOT NULL,
+        stage_id TEXT,
+        stage_name TEXT NOT NULL,
+        occurred_at TEXT NOT NULL,
+        note TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_application_events_application ON application_events(application_id);
+
+      -- Recruiters / hiring managers / referrers tied to one application.
+      -- Deleted with the application.
+      CREATE TABLE IF NOT EXISTS application_contacts (
+        id TEXT PRIMARY KEY,
+        application_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        title TEXT,
+        email TEXT,
+        url TEXT,
+        notes TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_application_contacts_application ON application_contacts(application_id);
     `);
   }
 
@@ -733,10 +920,11 @@ export class StoreService {
 
   removeDocument(id: string): boolean {
     const run = this.db.transaction(() => {
-      // Drop any ledger line-item and portfolio-holding links so they dangle
-      // harmlessly rather than pointing at a deleted document.
+      // Drop any ledger line-item, portfolio-holding and job-application links
+      // so they dangle harmlessly rather than pointing at a deleted document.
       this.db.prepare('UPDATE line_items SET document_id = NULL WHERE document_id = ?').run(id);
       this.db.prepare('UPDATE holdings SET document_id = NULL WHERE document_id = ?').run(id);
+      this.db.prepare('UPDATE job_applications SET document_id = NULL WHERE document_id = ?').run(id);
       this.deleteChunksUnsafe(id);
       return this.db.prepare('DELETE FROM documents WHERE id = ?').run(id).changes > 0;
     });
@@ -745,10 +933,11 @@ export class StoreService {
 
   removeDocumentAndQueueFileDeletion(id: string, storagePath: string): boolean {
     const run = this.db.transaction(() => {
-      // Drop any ledger line-item and portfolio-holding links so they dangle
-      // harmlessly rather than pointing at a deleted document.
+      // Drop any ledger line-item, portfolio-holding and job-application links
+      // so they dangle harmlessly rather than pointing at a deleted document.
       this.db.prepare('UPDATE line_items SET document_id = NULL WHERE document_id = ?').run(id);
       this.db.prepare('UPDATE holdings SET document_id = NULL WHERE document_id = ?').run(id);
+      this.db.prepare('UPDATE job_applications SET document_id = NULL WHERE document_id = ?').run(id);
       this.deleteChunksUnsafe(id);
       const deleted = this.db.prepare('DELETE FROM documents WHERE id = ?').run(id).changes > 0;
       if (deleted) this.queueDocumentFileDeletionUnsafe(storagePath);
@@ -1481,5 +1670,294 @@ export class StoreService {
 
   removeWatchlistItem(id: string): boolean {
     return this.db.prepare('DELETE FROM watchlist WHERE id = ?').run(id).changes > 0;
+  }
+
+  // ── Job applications: stages ──────────────────────────────────────────────
+
+  listApplicationStages(): ApplicationStage[] {
+    const rows = this.db
+      .prepare('SELECT * FROM application_stages ORDER BY position, rowid')
+      .all() as ApplicationStageRow[];
+    return rows.map(rowToApplicationStage);
+  }
+
+  getApplicationStage(id: string): ApplicationStage | undefined {
+    const row = this.db.prepare('SELECT * FROM application_stages WHERE id = ?').get(id) as
+      | ApplicationStageRow
+      | undefined;
+    return row ? rowToApplicationStage(row) : undefined;
+  }
+
+  addApplicationStage(stage: ApplicationStage): void {
+    this.db
+      .prepare('INSERT INTO application_stages (id, name, position, color, kind, is_terminal) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(stage.id, stage.name, stage.position, stage.color, stage.kind, stage.isTerminal ? 1 : 0);
+  }
+
+  updateApplicationStage(id: string, updates: ApplicationStageInput): ApplicationStage | undefined {
+    const existing = this.getApplicationStage(id);
+    if (!existing) return undefined;
+    const has = (k: keyof ApplicationStageInput) => Object.prototype.hasOwnProperty.call(updates, k);
+    const merged: ApplicationStage = {
+      ...existing,
+      name: has('name') ? updates.name ?? existing.name : existing.name,
+      color: has('color') ? updates.color ?? existing.color : existing.color,
+      kind: has('kind') ? updates.kind ?? existing.kind : existing.kind,
+      isTerminal: has('isTerminal') ? updates.isTerminal ?? existing.isTerminal : existing.isTerminal,
+    };
+    this.db
+      .prepare('UPDATE application_stages SET name = ?, color = ?, kind = ?, is_terminal = ? WHERE id = ?')
+      .run(merged.name, merged.color, merged.kind, merged.isTerminal ? 1 : 0, id);
+    return merged;
+  }
+
+  // Persists a manual pipeline order by stamping 1-based positions onto the
+  // given ids in array order (the reorderCategories pattern).
+  reorderApplicationStages(orderedIds: string[]): void {
+    const stmt = this.db.prepare('UPDATE application_stages SET position = ? WHERE id = ?');
+    const tx = this.db.transaction((ids: string[]) => {
+      ids.forEach((id, i) => stmt.run(i + 1, id));
+    });
+    tx(orderedIds);
+  }
+
+  removeApplicationStage(id: string): boolean {
+    return this.db.prepare('DELETE FROM application_stages WHERE id = ?').run(id).changes > 0;
+  }
+
+  countApplicationsInStage(stageId: string): number {
+    return (
+      this.db.prepare('SELECT COUNT(*) AS n FROM job_applications WHERE stage_id = ?').get(stageId) as { n: number }
+    ).n;
+  }
+
+  // ── Job applications ──────────────────────────────────────────────────────
+
+  listJobApplications(): JobApplication[] {
+    const rows = this.db
+      .prepare('SELECT * FROM job_applications ORDER BY created_at DESC')
+      .all() as JobApplicationRow[];
+    return rows.map(rowToJobApplication);
+  }
+
+  getJobApplication(id: string): JobApplication | undefined {
+    const row = this.db.prepare('SELECT * FROM job_applications WHERE id = ?').get(id) as
+      | JobApplicationRow
+      | undefined;
+    return row ? rowToJobApplication(row) : undefined;
+  }
+
+  addJobApplication(app: JobApplication): void {
+    this.db
+      .prepare(`
+        INSERT INTO job_applications (
+          id, company, role, url, location, work_mode, description, source, compensation,
+          stage_id, applied_date, document_id, notes, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run(
+        app.id,
+        app.company,
+        app.role,
+        app.url ?? null,
+        app.location ?? null,
+        app.workMode ?? null,
+        app.description ?? null,
+        app.source ?? null,
+        app.compensation ?? null,
+        app.stageId,
+        app.appliedDate ?? null,
+        app.documentId ?? null,
+        app.notes ?? null,
+        app.createdAt,
+        app.updatedAt,
+      );
+  }
+
+  // Partial update of the editable fields. The stage is deliberately NOT
+  // settable here — stage changes go through the events methods so the status
+  // history stays truthful. `documentId: null` clears the link.
+  updateJobApplication(
+    id: string,
+    updates: Omit<JobApplicationInput, 'stageId'> & { updatedAt: string },
+  ): JobApplication | undefined {
+    const existing = this.getJobApplication(id);
+    if (!existing) return undefined;
+    const has = (k: keyof JobApplicationInput) => Object.prototype.hasOwnProperty.call(updates, k);
+    const merged: JobApplication = {
+      ...existing,
+      company: has('company') ? updates.company ?? existing.company : existing.company,
+      role: has('role') ? updates.role ?? existing.role : existing.role,
+      url: has('url') ? updates.url : existing.url,
+      location: has('location') ? updates.location : existing.location,
+      workMode: has('workMode') ? updates.workMode ?? undefined : existing.workMode,
+      description: has('description') ? updates.description : existing.description,
+      source: has('source') ? updates.source : existing.source,
+      compensation: has('compensation') ? updates.compensation : existing.compensation,
+      appliedDate: has('appliedDate') ? updates.appliedDate : existing.appliedDate,
+      documentId: has('documentId') ? updates.documentId ?? undefined : existing.documentId,
+      notes: has('notes') ? updates.notes : existing.notes,
+      updatedAt: updates.updatedAt,
+    };
+    this.db
+      .prepare(`
+        UPDATE job_applications SET
+          company = ?, role = ?, url = ?, location = ?, work_mode = ?, description = ?,
+          source = ?, compensation = ?, applied_date = ?, document_id = ?, notes = ?, updated_at = ?
+        WHERE id = ?
+      `)
+      .run(
+        merged.company,
+        merged.role,
+        merged.url ?? null,
+        merged.location ?? null,
+        merged.workMode ?? null,
+        merged.description ?? null,
+        merged.source ?? null,
+        merged.compensation ?? null,
+        merged.appliedDate ?? null,
+        merged.documentId ?? null,
+        merged.notes ?? null,
+        merged.updatedAt,
+        id,
+      );
+    return merged;
+  }
+
+  // Moves an application to a stage (the denormalized head of its history);
+  // callers append the matching event in the same breath.
+  setJobApplicationStage(id: string, stageId: string, updatedAt: string): void {
+    this.db.prepare('UPDATE job_applications SET stage_id = ?, updated_at = ? WHERE id = ?').run(stageId, updatedAt, id);
+  }
+
+  removeJobApplication(id: string): boolean {
+    const run = this.db.transaction(() => {
+      const deleted = this.db.prepare('DELETE FROM job_applications WHERE id = ?').run(id).changes > 0;
+      if (deleted) {
+        this.db.prepare('DELETE FROM application_events WHERE application_id = ?').run(id);
+        this.db.prepare('DELETE FROM application_contacts WHERE application_id = ?').run(id);
+      }
+      return deleted;
+    });
+    return run();
+  }
+
+  // ── Job applications: status events ───────────────────────────────────────
+
+  // Newest first, matching ApplicationDetail.events.
+  listApplicationEvents(applicationId: string): ApplicationEvent[] {
+    const rows = this.db
+      .prepare('SELECT * FROM application_events WHERE application_id = ? ORDER BY occurred_at DESC, rowid DESC')
+      .all(applicationId) as ApplicationEventRow[];
+    return rows.map(rowToApplicationEvent);
+  }
+
+  // Every event, grouped by application id (newest first) — one query for the
+  // snapshot/stats builder instead of one per application (the listAllLots
+  // pattern).
+  listAllApplicationEvents(): Map<string, ApplicationEvent[]> {
+    const rows = this.db
+      .prepare('SELECT * FROM application_events ORDER BY occurred_at DESC, rowid DESC')
+      .all() as ApplicationEventRow[];
+    const byApplication = new Map<string, ApplicationEvent[]>();
+    for (const row of rows) {
+      const event = rowToApplicationEvent(row);
+      const list = byApplication.get(event.applicationId);
+      if (list) list.push(event);
+      else byApplication.set(event.applicationId, [event]);
+    }
+    return byApplication;
+  }
+
+  getApplicationEvent(id: string): ApplicationEvent | undefined {
+    const row = this.db.prepare('SELECT * FROM application_events WHERE id = ?').get(id) as
+      | ApplicationEventRow
+      | undefined;
+    return row ? rowToApplicationEvent(row) : undefined;
+  }
+
+  addApplicationEvent(event: ApplicationEvent): void {
+    this.db
+      .prepare('INSERT INTO application_events (id, application_id, stage_id, stage_name, occurred_at, note) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(event.id, event.applicationId, event.stageId ?? null, event.stageName, event.occurredAt, event.note ?? null);
+  }
+
+  updateApplicationEvent(id: string, input: { occurredAt?: string; note?: string }): ApplicationEvent | undefined {
+    const existing = this.getApplicationEvent(id);
+    if (!existing) return undefined;
+    const merged: ApplicationEvent = {
+      ...existing,
+      occurredAt: input.occurredAt ?? existing.occurredAt,
+      note: input.note !== undefined ? input.note || undefined : existing.note,
+    };
+    this.db
+      .prepare('UPDATE application_events SET occurred_at = ?, note = ? WHERE id = ?')
+      .run(merged.occurredAt, merged.note ?? null, id);
+    return merged;
+  }
+
+  removeApplicationEvent(id: string): boolean {
+    return this.db.prepare('DELETE FROM application_events WHERE id = ?').run(id).changes > 0;
+  }
+
+  // ── Job applications: contacts ────────────────────────────────────────────
+
+  listApplicationContacts(applicationId: string): ApplicationContact[] {
+    const rows = this.db
+      .prepare('SELECT * FROM application_contacts WHERE application_id = ? ORDER BY created_at, rowid')
+      .all(applicationId) as ApplicationContactRow[];
+    return rows.map(rowToApplicationContact);
+  }
+
+  // Contact counts per application, one query (for the snapshot's rows).
+  applicationContactCounts(): Map<string, number> {
+    const rows = this.db
+      .prepare('SELECT application_id, COUNT(*) AS n FROM application_contacts GROUP BY application_id')
+      .all() as { application_id: string; n: number }[];
+    return new Map(rows.map(r => [r.application_id, r.n]));
+  }
+
+  getApplicationContact(id: string): ApplicationContact | undefined {
+    const row = this.db.prepare('SELECT * FROM application_contacts WHERE id = ?').get(id) as
+      | ApplicationContactRow
+      | undefined;
+    return row ? rowToApplicationContact(row) : undefined;
+  }
+
+  addApplicationContact(contact: ApplicationContact): void {
+    this.db
+      .prepare('INSERT INTO application_contacts (id, application_id, name, title, email, url, notes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(
+        contact.id,
+        contact.applicationId,
+        contact.name,
+        contact.title ?? null,
+        contact.email ?? null,
+        contact.url ?? null,
+        contact.notes ?? null,
+        contact.createdAt,
+      );
+  }
+
+  updateApplicationContact(id: string, input: ApplicationContactInput): ApplicationContact | undefined {
+    const existing = this.getApplicationContact(id);
+    if (!existing) return undefined;
+    const has = (k: keyof ApplicationContactInput) => Object.prototype.hasOwnProperty.call(input, k);
+    const merged: ApplicationContact = {
+      ...existing,
+      name: has('name') ? input.name ?? existing.name : existing.name,
+      title: has('title') ? input.title : existing.title,
+      email: has('email') ? input.email : existing.email,
+      url: has('url') ? input.url : existing.url,
+      notes: has('notes') ? input.notes : existing.notes,
+    };
+    this.db
+      .prepare('UPDATE application_contacts SET name = ?, title = ?, email = ?, url = ?, notes = ? WHERE id = ?')
+      .run(merged.name, merged.title ?? null, merged.email ?? null, merged.url ?? null, merged.notes ?? null, id);
+    return merged;
+  }
+
+  removeApplicationContact(id: string): boolean {
+    return this.db.prepare('DELETE FROM application_contacts WHERE id = ?').run(id).changes > 0;
   }
 }

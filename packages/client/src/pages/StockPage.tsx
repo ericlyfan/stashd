@@ -6,6 +6,7 @@ import {
   HoldingInput,
   HoldingLot,
   HoldingWithQuote,
+  InsiderActivity,
   NewsItem,
   StockHistory,
   StockProfile,
@@ -15,6 +16,7 @@ import {
   addWatchlist,
   createHolding,
   deleteHolding,
+  getInsiderActivity,
   getPortfolio,
   getStockHistory,
   getStockNews,
@@ -88,6 +90,7 @@ export default function StockPage() {
   const [lots, setLots] = useState<HoldingLot[]>([]);
   const [profile, setProfile] = useState<StockProfile | null>(null);
   const [news, setNews] = useState<NewsItem[]>([]);
+  const [insiders, setInsiders] = useState<InsiderActivity | null>(null);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(false);
   const [adding, setAdding] = useState(false);
@@ -110,6 +113,7 @@ export default function StockPage() {
       // and never block the page.
       void getStockProfile(sym, hist.currency).then(setProfile).catch(() => {});
       void getStockNews(sym, hist.currency).then(setNews).catch(() => {});
+      void getInsiderActivity(sym).then(setInsiders).catch(() => {});
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Could not load stock', 'err');
     } finally {
@@ -298,6 +302,10 @@ export default function StockPage() {
               <ul className="news-list">
                 {news.map((n, i) => (
                   <li key={i} className="news-item">
+                    <span
+                      className={`news-tone news-tone-${n.sentiment ?? 'neu'}`}
+                      title={n.sentiment === 'pos' ? 'Positive-leaning headline' : n.sentiment === 'neg' ? 'Negative-leaning headline' : 'Neutral headline'}
+                    />
                     {n.url ? (
                       <a href={n.url} target="_blank" rel="noreferrer" className="news-title">{n.title}</a>
                     ) : (
@@ -469,10 +477,32 @@ export default function StockPage() {
             </section>
           )}
 
+          {insiders && (
+            <section className="stock-card">
+              <div className="stock-card-head">
+                <h2 className="stock-card-title">Insider activity</h2>
+                <span className={`insider-chip insider-${insiders.posture}`}>
+                  {insiders.posture === 'buying' ? 'Net buying' : insiders.posture === 'selling' ? 'Net selling' : insiders.posture === 'mixed' ? 'Mixed' : 'Quiet'}
+                </span>
+              </div>
+              <dl className="stock-facts">
+                <div><dt>Open-market buys (3m / 12m)</dt><dd>{insiders.buys3m} / {insiders.buys12m}</dd></div>
+                <div><dt>Sells (3m / 12m)</dt><dd>{insiders.sells3m} / {insiders.sells12m}</dd></div>
+                {insiders.sharesSold3m !== undefined && insiders.sharesSold3m > 0 && (
+                  <div><dt>Shares sold, 3m</dt><dd>{formatCompact(insiders.sharesSold3m)}</dd></div>
+                )}
+                {insiders.sharesBought3m !== undefined && insiders.sharesBought3m > 0 && (
+                  <div><dt>Shares bought, 3m</dt><dd>{formatCompact(insiders.sharesBought3m)}</dd></div>
+                )}
+              </dl>
+            </section>
+          )}
+
           {watch?.notes && (
             <section className="stock-card">
               <div className="stock-card-head">
-                <h2 className="stock-card-title">Notes</h2>
+                <h2 className="stock-card-title">Watch thesis</h2>
+                {watch.folder && <span className="stock-weight">{watch.folder}</span>}
               </div>
               <p className="stock-notes">{watch.notes}</p>
             </section>

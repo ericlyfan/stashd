@@ -6,6 +6,7 @@ import {
   AgentTraceEvent,
   AgentTraceSink,
   AgenticWorkflow,
+  createApplicationAgentTools,
   createDocumentAgentTools,
   createPortfolioAgentTools,
   createProjectAgentTools,
@@ -121,6 +122,50 @@ function summarizeTool(event: Extract<AgentTraceEvent, { type: 'tool_result' }>)
     };
   }
 
+  if (event.tool === 'add_application' || event.tool === 'move_application' || event.tool === 'update_application') {
+    try {
+      const parsed = JSON.parse(event.result) as {
+        ok?: unknown;
+        error?: unknown;
+        application?: { company?: unknown; role?: unknown; stage?: unknown };
+        changed?: unknown;
+      };
+      if (typeof parsed.error === 'string') {
+        return { tool: event.tool, args: event.args, summary: `Agent could not change an application: ${parsed.error}` };
+      }
+      const company = typeof parsed.application?.company === 'string' ? parsed.application.company : 'an application';
+      if (event.tool === 'add_application') {
+        const role = typeof parsed.application?.role === 'string' ? ` — ${parsed.application.role}` : '';
+        return { tool: event.tool, args: event.args, summary: `Agent added application: ${company}${role}` };
+      }
+      if (event.tool === 'move_application') {
+        const stage = typeof parsed.application?.stage === 'string' ? ` to ${parsed.application.stage}` : '';
+        return { tool: event.tool, args: event.args, summary: `Agent moved ${company}${stage}` };
+      }
+      const changed = Array.isArray(parsed.changed) ? ` (${parsed.changed.join(', ')})` : '';
+      return { tool: event.tool, args: event.args, summary: `Agent updated the ${company} application${changed}` };
+    } catch {
+      return { tool: event.tool, args: event.args, summary: 'Agent changed a job application' };
+    }
+  }
+
+  if (event.tool === 'get_applications') {
+    let total: number | undefined;
+    let active: number | undefined;
+    try {
+      const parsed = JSON.parse(event.result) as { stats?: { total?: unknown; active?: unknown } };
+      if (typeof parsed.stats?.total === 'number') total = parsed.stats.total;
+      if (typeof parsed.stats?.active === 'number') active = parsed.stats.active;
+    } catch {
+      // Keep the generic summary below.
+    }
+    return {
+      tool: event.tool,
+      args: event.args,
+      summary: `Agent read the job-application pipeline${total !== undefined ? ` - ${total} application${total === 1 ? '' : 's'}${active !== undefined ? `, ${active} active` : ''}` : ''}`,
+    };
+  }
+
   return { tool: event.tool, args: event.args, summary: `Agent used ${event.tool}: ${preview(event.result)}` };
 }
 
@@ -191,6 +236,7 @@ export class AgenticChatService {
           ...createProjectAgentTools(this.store),
           ...createDocumentAgentTools(new StoreDocumentCorpus(this.store)),
           ...createPortfolioAgentTools(this.store),
+          ...createApplicationAgentTools(this.store),
         ],
         traceSink,
       );

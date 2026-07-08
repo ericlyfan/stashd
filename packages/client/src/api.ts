@@ -1,4 +1,11 @@
 import {
+  ApplicationContact,
+  ApplicationContactInput,
+  ApplicationDetail,
+  ApplicationEvent,
+  ApplicationStage,
+  ApplicationStageInput,
+  ApplicationsSnapshot,
   Category,
   ChatAttachment,
   ChatMode,
@@ -13,8 +20,10 @@ import {
   HoldingLotInput,
   LineItem,
   LineItemInput,
+  InsiderActivity,
   MoversKind,
   NewsItem,
+  PortfolioHealth,
   PortfolioSnapshot,
   PulseItem,
   ScreenerRow,
@@ -24,6 +33,8 @@ import {
   WatchlistItem,
   WatchlistItemInput,
   WatchlistItemWithQuote,
+  JobApplication,
+  JobApplicationInput,
   ProjectDetail,
   ProjectSummary,
   SearchHit,
@@ -54,6 +65,22 @@ export type { SearchHit } from '@stashd/shared';
 export type { ClassificationResult } from '@stashd/shared';
 
 export type { ChatMode } from '@stashd/shared';
+
+export type {
+  ApplicationContact,
+  ApplicationContactInput,
+  ApplicationDetail,
+  ApplicationEvent,
+  ApplicationStage,
+  ApplicationStageInput,
+  ApplicationsSnapshot,
+  ApplicationStats,
+  EnrichedApplication,
+  JobApplication,
+  JobApplicationInput,
+  StageKind,
+  WorkMode,
+} from '@stashd/shared';
 
 const BASE = '/api';
 
@@ -488,6 +515,122 @@ export function updateLot(holdingId: string, lotId: string, input: HoldingLotInp
 
 export function deleteLot(holdingId: string, lotId: string): Promise<void> {
   return req<void>(`/holdings/${holdingId}/lots/${lotId}`, { method: 'DELETE' });
+}
+
+// ── Job applications ─────────────────────────────────────────────────────────
+
+// The whole tracker: enriched applications + pipeline stages + KPI stats.
+export function getApplications(): Promise<ApplicationsSnapshot> {
+  return req<ApplicationsSnapshot>('/applications');
+}
+
+export function getApplication(id: string): Promise<ApplicationDetail> {
+  return req<ApplicationDetail>(`/applications/${id}`);
+}
+
+export function createApplication(input: JobApplicationInput): Promise<JobApplication> {
+  return req<JobApplication>('/applications', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateApplication(id: string, input: JobApplicationInput): Promise<JobApplication> {
+  return req<JobApplication>(`/applications/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteApplication(id: string): Promise<void> {
+  return req<void>(`/applications/${id}`, { method: 'DELETE' });
+}
+
+// Move an application to a stage — appends a status-history event (the board
+// drag and dialog stage-select both go through this, never PATCH).
+export function addApplicationEvent(
+  applicationId: string,
+  input: { stageId: string; note?: string; occurredAt?: string },
+): Promise<ApplicationEvent> {
+  return req<ApplicationEvent>(`/applications/${applicationId}/events`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateApplicationEvent(
+  applicationId: string,
+  eventId: string,
+  input: { occurredAt?: string; note?: string },
+): Promise<ApplicationEvent> {
+  return req<ApplicationEvent>(`/applications/${applicationId}/events/${eventId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteApplicationEvent(applicationId: string, eventId: string): Promise<void> {
+  return req<void>(`/applications/${applicationId}/events/${eventId}`, { method: 'DELETE' });
+}
+
+export function addApplicationContact(
+  applicationId: string,
+  input: ApplicationContactInput,
+): Promise<ApplicationContact> {
+  return req<ApplicationContact>(`/applications/${applicationId}/contacts`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateApplicationContact(
+  applicationId: string,
+  contactId: string,
+  input: ApplicationContactInput,
+): Promise<ApplicationContact> {
+  return req<ApplicationContact>(`/applications/${applicationId}/contacts/${contactId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteApplicationContact(applicationId: string, contactId: string): Promise<void> {
+  return req<void>(`/applications/${applicationId}/contacts/${contactId}`, { method: 'DELETE' });
+}
+
+export function createApplicationStage(input: ApplicationStageInput & { name: string }): Promise<ApplicationStage> {
+  return req<ApplicationStage>('/applications/stages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateApplicationStage(id: string, input: ApplicationStageInput): Promise<ApplicationStage> {
+  return req<ApplicationStage>(`/applications/stages/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteApplicationStage(id: string): Promise<void> {
+  return req<void>(`/applications/stages/${id}`, { method: 'DELETE' });
+}
+
+// Persist a manual pipeline order; returns the re-sorted stage list.
+export function reorderApplicationStages(ids: string[]): Promise<ApplicationStage[]> {
+  return req<ApplicationStage[]>('/applications/stages/reorder', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids }),
+  });
 }
 
 export function subscribeClassify(jobId: string, onEvent: (event: SSEEvent) => void): EventSource {

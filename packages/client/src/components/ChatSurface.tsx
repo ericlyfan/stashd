@@ -690,7 +690,11 @@ export default function ChatSurface({
     // Tools that mutate the stash (documents or ledgers) — refresh the store
     // afterwards so pages and sidebar counts reflect what the assistant did.
     const WRITE_TOOLS = ['update_doc', 'add_line_item', 'create_project'];
+    // Job-application writes live outside the global store (the page owns its
+    // own data), so they're announced with a window event the page listens for.
+    const APP_WRITE_TOOLS = ['add_application', 'move_application', 'update_application'];
     let touchedStore = false;
+    let touchedApplications = false;
     try {
       await sendChatMessage(activeConvId, text, (event: ChatSSEEvent) => {
         if (event.type === 'token') {
@@ -699,6 +703,7 @@ export default function ChatSurface({
           // Any text streamed before a tool round was deliberation, not the
           // answer — drop it and show the action instead.
           if (WRITE_TOOLS.includes(event.call.tool)) touchedStore = true;
+          if (APP_WRITE_TOOLS.includes(event.call.tool)) touchedApplications = true;
           setStream(s => s && { text: '', tools: [...s.tools, event.call] });
         } else if (event.type === 'done') {
           setMessages(prev => [...prev, event.message]);
@@ -712,6 +717,7 @@ export default function ChatSurface({
       setStream(null);
       refreshConversations();
       if (touchedStore) refresh();
+      if (touchedApplications) window.dispatchEvent(new CustomEvent('stashd:applications-changed'));
     }
   }
 
