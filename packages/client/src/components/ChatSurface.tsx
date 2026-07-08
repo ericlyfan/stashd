@@ -30,13 +30,11 @@ import {
   deleteConversation,
   getConversation,
   listConversations,
-  ChatMode,
   CategoryWithCount,
   ProjectSummary,
   removeChatAttachment,
   sendChatMessage,
   setConversationPins,
-  updateConversationMode,
 } from '../api';
 import { relTime } from '../lib/format';
 
@@ -351,29 +349,6 @@ function AttachmentBar({
   );
 }
 
-// ── Chat modes ──────────────────────────────────────────────────────────────
-// The two engines a conversation can be answered by; the mode is fixed per
-// conversation (chosen on the New Chat screen, switchable from the header).
-
-interface ModeMeta {
-  id: ChatMode;
-  label: string;
-  blurb: string;
-}
-
-const MODES: ModeMeta[] = [
-  {
-    id: 'classic',
-    label: 'Current',
-    blurb: 'Fast answers grounded in your documents, cited line by line.',
-  },
-  {
-    id: 'agentic',
-    label: 'Agentic',
-    blurb: 'A multi-step agent that searches, reads and acts across the stash.',
-  },
-];
-
 // Ground the example prompts in the actual stash so they're one click from a
 // real answer, not hypotheticals. Draws on documents, drawers and ledgers and
 // returns up to four; shared by the New Chat screen and the in-thread empty
@@ -505,10 +480,7 @@ function HistoryMenu({
                   setOpen(false);
                 }}
               >
-                <span className="chat-hist-title">
-                  {conv.title}
-                  {conv.mode === 'agentic' && <span className="chat-rail-mode">Agentic</span>}
-                </span>
+                <span className="chat-hist-title">{conv.title}</span>
                 <span className="chat-hist-date">{relTime(conv.updatedAt)}</span>
               </button>
               <button
@@ -568,11 +540,6 @@ export default function ChatSurface({
   const dropDepth = useRef(0);
   const [input, setInput] = useState('');
   const [stream, setStream] = useState<StreamState | null>(null);
-  // For an open conversation, `mode` mirrors that conversation's stored mode;
-  // for a fresh New Chat it seeds from the last-used default in localStorage.
-  const [mode, setMode] = useState<ChatMode>(() =>
-    window.localStorage.getItem('stashd.chatMode') === 'agentic' ? 'agentic' : 'classic',
-  );
   const busy = stream !== null;
   const threadRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -588,9 +555,6 @@ export default function ChatSurface({
       setMessages([]);
       setPinnedDocIds([]);
       setAttachments([]);
-      // A fresh New Chat starts from the last-used default, not whatever the
-      // previously open conversation happened to use.
-      setMode(window.localStorage.getItem('stashd.chatMode') === 'agentic' ? 'agentic' : 'classic');
       return;
     }
     getConversation(id)
@@ -598,7 +562,6 @@ export default function ChatSurface({
         setMessages(detail.messages);
         setPinnedDocIds(detail.pinnedDocIds);
         setAttachments(detail.attachments);
-        setMode(detail.mode);
       })
       .catch(() => {
         notify('Conversation not found', 'err');
@@ -615,20 +578,6 @@ export default function ChatSurface({
   useEffect(() => {
     if (!busy) textareaRef.current?.focus();
   }, [busy, id]);
-
-  // Switch the chat mode. For an open conversation this persists per
-  // conversation (so the thread remembers it); on the New Chat screen it just
-  // updates the default used for the next conversation we create.
-  function changeMode(next: ChatMode) {
-    if (next === mode) return;
-    setMode(next);
-    window.localStorage.setItem('stashd.chatMode', next);
-    if (!id) return;
-    setConversations(prev => prev.map(c => (c.id === id ? { ...c, mode: next } : c)));
-    updateConversationMode(id, next).catch(err =>
-      notify(err instanceof Error ? err.message : 'Could not switch chat mode', 'err'),
-    );
-  }
 
   // Resolve a (possibly truncated) citation id to a real document: exact or
   // prefix match against the message's recorded citations first (survives doc
@@ -665,7 +614,7 @@ export default function ChatSurface({
     let activeConvId = id;
     if (!activeConvId) {
       try {
-        const conv = await createConversation(mode);
+        const conv = await createConversation();
         activeConvId = conv.id;
         onConvIdChange(conv.id, { replace: true });
         if (pinnedDocIds.length) await setConversationPins(conv.id, pinnedDocIds);
@@ -753,7 +702,7 @@ export default function ChatSurface({
     let cid = id;
     if (!cid) {
       try {
-        const conv = await createConversation(mode);
+        const conv = await createConversation();
         cid = conv.id;
         onConvIdChange(conv.id, { replace: true });
         if (pinnedDocIds.length) await setConversationPins(conv.id, pinnedDocIds);
@@ -837,7 +786,7 @@ export default function ChatSurface({
   const drawersInUse = categories.filter(c => c.documentCount > 0).length;
   const flaggedCount = docs.filter(d => d.status === 'pending').length;
 
-  // The centered "New Chat" screen (dynamic greeting + mode cards + suggestions)
+  // The centered "New Chat" screen (dynamic greeting + suggestions)
   // is a full-page affair. In the compact dock we skip it and just show the
   // sheet with its simple empty state, so the popup stays small and uncluttered.
   const showStart = variant === 'page' && !id && messages.length === 0 && !stream;
@@ -880,27 +829,6 @@ export default function ChatSurface({
     </div>
   );
 
-  // Compact segmented mode switch used in the thread header.
-  const modeToggle = (
-    <div className="chat-mode" role="radiogroup" aria-label="Chat mode">
-      {MODES.map(m => (
-        <button
-          key={m.id}
-          className={mode === m.id ? 'active' : ''}
-          onClick={() => changeMode(m.id)}
-          disabled={busy}
-          role="radio"
-          aria-checked={mode === m.id}
-          title={m.label}
-          type="button"
-        >
-          <span className="chat-mode-ic">{m.id === 'agentic' ? <Wrench size={12} /> : <Sparkles size={12} />}</span>
-          <span className="chat-mode-label">{m.label}</span>
-        </button>
-      ))}
-    </div>
-  );
-
   return (
     <div
       className={`chat-layout chat-layout--${variant}${dropActive ? ' chat-drop-active' : ''}`}
@@ -930,7 +858,6 @@ export default function ChatSurface({
             onDelete={removeConversation}
           />
           <div className="chat-topbar-right">
-            {!showStart && modeToggle}
             <button
               className="chat-newchat"
               onClick={() => onConvIdChange(undefined)}
@@ -985,25 +912,6 @@ export default function ChatSurface({
                   </>
                 )}
               </p>
-
-              <div className="chat-mode-pick" role="radiogroup" aria-label="Chat mode">
-                {MODES.map(m => (
-                  <button
-                    key={m.id}
-                    type="button"
-                    role="radio"
-                    aria-checked={mode === m.id}
-                    className={`chat-mode-card${mode === m.id ? ' active' : ''}`}
-                    onClick={() => changeMode(m.id)}
-                  >
-                    <span className="chat-mode-card-label">
-                      {m.id === 'agentic' ? <Wrench size={13} /> : <Sparkles size={13} />}
-                      {m.label}
-                    </span>
-                    <span className="chat-mode-card-blurb">{m.blurb}</span>
-                  </button>
-                ))}
-              </div>
 
               {composer}
 

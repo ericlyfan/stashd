@@ -105,16 +105,14 @@ export interface SSEEvent {
 }
 
 // ── Chat / RAG ──────────────────────────────────────────────────────────────
-
-// Which chat engine a conversation talks to: the original RAG `ChatService`
-// ("classic") or the experimental agentic loop ("agentic"). Stored per
-// conversation so each thread keeps the mode it was started in.
-export type ChatMode = "classic" | "agentic";
+// All conversations are answered by the one hybrid agentic engine
+// (AgenticChatService): a RAG seed in the context plus the tool loop. The old
+// per-conversation classic/agentic ChatMode is gone; legacy databases may
+// still carry a vestigial "mode" column, which is ignored.
 
 export interface Conversation {
   id: string;
   title: string;
-  mode: ChatMode;
   createdAt: string;
   updatedAt: string;
 }

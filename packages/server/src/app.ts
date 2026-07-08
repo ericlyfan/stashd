@@ -8,7 +8,6 @@ import { createDocumentRoutes } from './routes/documents';
 import { backfillDerivedFields } from './services/textExtraction';
 import { createCategoryRoutes } from './routes/categories';
 import { EmbeddingService } from './services/EmbeddingService';
-import { ChatService } from './services/ChatService';
 import { AgenticChatService } from './services/AgenticChatService';
 import { createChatRoutes } from './routes/chat';
 import { createProjectRoutes } from './routes/projects';
@@ -86,8 +85,9 @@ export async function createApp(dataDir: string, overrides: AppOverrides = {}): 
 
   const provider = getProvider(process.env.PROVIDER ?? 'ollama');
   const classificationService = overrides.classificationService ?? new ClassificationService(provider);
-  const chatService = new ChatService(store, embeddingService);
-  const agenticChatService = new AgenticChatService(store);
+  // The one chat engine: the agentic loop, seeded with the same embeddings-
+  // backed retrieval the retired classic ChatService used.
+  const agenticChatService = new AgenticChatService(store, embeddingService);
 
   const app = express();
   app.use(cors());
@@ -98,7 +98,7 @@ export async function createApp(dataDir: string, overrides: AppOverrides = {}): 
 
   app.use('/api/documents', createDocumentRoutes({ store, fileService, classificationService, embeddingService }));
   app.use('/api/categories', createCategoryRoutes({ store }));
-  app.use('/api/chat', createChatRoutes({ store, chatService, agenticChatService }));
+  app.use('/api/chat', createChatRoutes({ store, agenticChatService }));
   app.use('/api/projects', createProjectRoutes({ store }));
   app.use('/api/holdings', createHoldingRoutes({ store }));
   app.use('/api/watchlist', createWatchlistRoutes({ store }));

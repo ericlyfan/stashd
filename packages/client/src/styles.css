@@ -2501,19 +2501,6 @@ body.chat-drag-over .drop-curtain {
   background: var(--paper-deep);
 }
 
-/* Mode toggle: labels on the full page, compact icons in the dock (keeps the
-   narrow toolbar from overflowing and squeezing the close button). */
-.chat-mode-ic {
-  display: none;
-  align-items: center;
-}
-.chat-layout--dock .chat-mode-ic {
-  display: inline-flex;
-}
-.chat-layout--dock .chat-mode-label {
-  display: none;
-}
-
 .chat-topbar--drag {
   cursor: move;
   user-select: none;
@@ -2577,9 +2564,6 @@ body.dragging-dock {
 .chat-layout--dock .chat-start-inner > p {
   font-size: 12.5px;
 }
-.chat-layout--dock .chat-mode-pick {
-  grid-template-columns: 1fr;
-}
 
 /* Compact the top toolbar so it fits the narrow dock instead of overflowing. */
 .chat-layout--dock .chat-topbar {
@@ -2626,14 +2610,9 @@ body.dragging-dock {
 }
 /* The right-hand controls keep their size — only the history title (below)
    gives way — so nothing gets squished as the dock narrows. */
-.chat-layout--dock .chat-mode,
 .chat-layout--dock .chat-newchat,
 .chat-layout--dock .chat-dock-btn {
   flex-shrink: 0;
-}
-.chat-layout--dock .chat-mode button {
-  padding: 4px 8px;
-  font-size: 11.5px;
 }
 .chat-layout--dock .chat-dock-btn {
   padding: 4px;
@@ -2961,43 +2940,6 @@ body.dragging-dock {
   min-height: 0;
 }
 
-.chat-mode {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  flex-shrink: 0;
-  padding: 2px;
-  background: var(--paper-deep);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-}
-
-.chat-mode button {
-  min-width: 74px;
-  border: 0;
-  border-radius: calc(var(--radius-sm) - 2px);
-  background: transparent;
-  color: var(--ink-3);
-  padding: 6px 10px;
-  font-family: var(--mono);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  cursor: pointer;
-}
-
-.chat-mode button.active {
-  background: var(--card-raised);
-  color: var(--wax-deep);
-  box-shadow: 0 1px 2px rgba(28, 24, 20, 0.08);
-}
-
-.chat-mode button:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
-
 /* New Chat — the centered "start" screen shown before a message is sent */
 
 .chat-start {
@@ -3037,59 +2979,6 @@ body.dragging-dock {
   color: var(--ink-3);
 }
 
-.chat-mode-pick {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-  margin-bottom: 18px;
-}
-
-.chat-mode-card {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  text-align: left;
-  padding: 13px 15px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--card-raised);
-  cursor: pointer;
-  transition:
-    border-color 100ms ease,
-    box-shadow 100ms ease,
-    transform 100ms ease;
-}
-
-.chat-mode-card:hover {
-  border-color: var(--wax);
-  transform: translateY(-1px);
-}
-
-.chat-mode-card.active {
-  border-color: var(--wax);
-  box-shadow:
-    inset 0 0 0 1px var(--wax),
-    0 2px 6px rgba(180, 58, 22, 0.12);
-}
-
-.chat-mode-card-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-family: var(--mono);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--wax-deep);
-}
-
-.chat-mode-card-blurb {
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--ink-3);
-}
-
 /* The composer becomes its own card on the start screen */
 .chat-start .chat-compose {
   border: 1px solid var(--line);
@@ -3124,20 +3013,6 @@ body.dragging-dock {
 .chat-start-suggest button:hover {
   border-color: var(--wax);
   transform: translateY(-1px);
-}
-
-.chat-rail-mode {
-  margin-left: 6px;
-  padding: 1px 5px;
-  border-radius: 4px;
-  background: var(--wax);
-  color: var(--card-raised);
-  font-family: var(--mono);
-  font-size: 8px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  vertical-align: middle;
 }
 
 /* The sheet — one card holding desk, thread and composer */
@@ -3762,9 +3637,6 @@ body.dragging-dock {
   }
   .chat-topbar {
     flex-wrap: wrap;
-  }
-  .chat-mode-pick {
-    grid-template-columns: 1fr;
   }
 }
 

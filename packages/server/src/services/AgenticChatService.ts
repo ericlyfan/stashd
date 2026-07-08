@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { ChatAttachment, ChatMessage, ChatSSEEvent, Citation, Document, ToolCallRecord } from '@stashd/shared';
 import { StoreService } from './StoreService';
+import { EmbeddingService, RetrievedChunk } from './EmbeddingService';
 import {
   AgentMessage,
   AgentTraceEvent,
@@ -16,6 +17,10 @@ import {
 
 const HISTORY_LIMIT = 12;
 const PINNED_TEXT_CAP = 8000;
+// The RAG seed: top-K chunks injected into the roster so common lookups don't
+// burn a tool round. Smaller than the classic chat's 6 — it's a starting
+// point, not the full context; the agent reads/searches for anything deeper.
+const SEED_K = 4;
 
 function preview(text: string, limit = 180): string {
   const compact = text.replace(/\s+/g, ' ').trim();
@@ -195,7 +200,10 @@ function attachmentContext(attachments: ChatAttachment[]): AgentMessage | undefi
 }
 
 export class AgenticChatService {
-  constructor(private readonly store: StoreService) {}
+  constructor(
+    private readonly store: StoreService,
+    private readonly embeddings: EmbeddingService,
+  ) {}
 
   async respond(conversationId: string, userText: string, send: (event: ChatSSEEvent) => void): Promise<void> {
     const conversation = this.store.getConversation(conversationId);
@@ -241,10 +249,14 @@ export class AgenticChatService {
         traceSink,
       );
       const result = await agent.run(userText, {
-        contextMessages: this.contextMessages(conversation.messages, conversation.pinnedDocIds, conversation.attachments),
+        contextMessages: await this.contextMessages(
+          conversation.messages,
+          conversation.pinnedDocIds,
+          conversation.attachments,
+          userText,
+        ),
         // Stream the answer token-by-token. Deliberation text from a round that
-        // ends in a tool call is discarded client-side on the `tool` event,
-        // exactly as classic chat does.
+        // ends in a tool call is discarded client-side on the `tool` event.
         onToken: text => send({ type: 'token', text }),
       });
 
@@ -274,8 +286,13 @@ export class AgenticChatService {
     }
   }
 
-  private contextMessages(history: ChatMessage[], pinnedDocIds: string[], attachments: ChatAttachment[]): AgentMessage[] {
-    const messages: AgentMessage[] = [this.rosterContext()];
+  private async contextMessages(
+    history: ChatMessage[],
+    pinnedDocIds: string[],
+    attachments: ChatAttachment[],
+    userText: string,
+  ): Promise<AgentMessage[]> {
+    const messages: AgentMessage[] = [this.rosterContext(await this.retrieveSeed(userText, pinnedDocIds))];
 
     const pinned = pinnedDocIds
       .map(id => this.store.getDocument(id))
@@ -292,10 +309,23 @@ export class AgenticChatService {
     return messages;
   }
 
+  // The RAG seed: the same sqlite-vec retrieval the classic chat used
+  // (EmbeddingService.retrieve — do not duplicate that query logic), trimmed
+  // to SEED_K and with pinned docs excluded (they already ride along in full).
+  // Degrades to an empty seed whenever embeddings are unavailable — the model
+  // never pulled, the local Ollama down, or init still in flight — exactly as
+  // classic degraded to search_docs-only; retrieval failures never throw.
+  private async retrieveSeed(userText: string, pinnedDocIds: string[]): Promise<RetrievedChunk[]> {
+    if (!this.embeddings.isReady) return [];
+    const retrieved = await this.embeddings.retrieve(userText, SEED_K).catch(() => []);
+    return retrieved.filter(c => !pinnedDocIds.includes(c.docId));
+  }
+
   // A lightweight orientation message so the agent knows the date and what
   // drawers/ledgers exist without spending a tool round to discover them. The
-  // tools still pull the actual detail on demand.
-  private rosterContext(): AgentMessage {
+  // tools still pull the actual detail on demand. The RAG seed rides along
+  // here so common lookups can be answered without burning a tool round.
+  private rosterContext(seed: RetrievedChunk[]): AgentMessage {
     const counts = this.store.getCategoryCounts();
     const categoryList = this.store
       .getCategories()
@@ -307,14 +337,22 @@ export class AgenticChatService {
           .map(p => `- ${p.id} (${p.name}${p.status === 'archived' ? ', archived' : ''}): ${p.totals.itemCount} line items`)
           .join('\n')
       : '(no projects yet)';
-    return {
-      role: 'system',
-      content: `Today's date: ${new Date().toISOString().slice(0, 10)}.\n\nCategory drawers:\n${categoryList}\n\nCost ledgers (projects):\n${projectList}`,
-    };
+    const sections = [
+      `Today's date: ${new Date().toISOString().slice(0, 10)}.\n\nCategory drawers:\n${categoryList}\n\nCost ledgers (projects):\n${projectList}`,
+    ];
+    if (seed.length > 0) {
+      // Same [doc:id] excerpt format the classic chat used, so citations and
+      // the client's prefix resolution keep working unchanged.
+      const blocks = seed.map(c => `[doc:${c.docId}] "${c.docName}" (${c.category}):\n${c.text}`);
+      sections.push(
+        `Retrieval seed — excerpts ranked by similarity to the question. These are an unconfirmed starting point, not verified evidence:\n\n${blocks.join('\n\n')}`,
+      );
+    }
+    return { role: 'system', content: sections.join('\n\n') };
   }
 
-  // Match ChatService's loose citation behavior: models can shorten UUIDs, so
-  // resolve unique prefixes against real document ids.
+  // Loose citation resolution: models can shorten UUIDs, so resolve unique
+  // prefixes against real document ids (the client mirrors this).
   private extractCitations(content: string): Citation[] | undefined {
     const ids = [...content.matchAll(/\[doc:([0-9a-f][0-9a-f-]{6,40})\]/gi)].map(m => m[1]);
     const citations: Citation[] = [];

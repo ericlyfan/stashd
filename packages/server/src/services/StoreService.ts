@@ -11,7 +11,6 @@ import {
   ConversationDetail,
   ChatAttachment,
   ChatMessage,
-  ChatMode,
   Project,
   ProjectStatus,
   ProjectSummary,
@@ -424,7 +423,6 @@ export class StoreService {
     sqliteVec.load(this.db);
     this.createSchema();
     this.migrateCategoryColumns();
-    this.migrateConversationColumns();
     this.migrateProjectColumns();
     this.migrateDocumentColumns();
     this.migrateWatchlistColumns();
@@ -456,15 +454,6 @@ export class StoreService {
     const cols = (this.db.prepare('PRAGMA table_info(watchlist)').all() as { name: string }[]).map(c => c.name);
     if (!cols.includes('folder')) {
       this.db.exec('ALTER TABLE watchlist ADD COLUMN folder TEXT');
-    }
-  }
-
-  // Adds the per-conversation chat-mode column to databases created before the
-  // agentic-mode toggle. Same guarded ALTER pattern as above.
-  private migrateConversationColumns(): void {
-    const cols = (this.db.prepare('PRAGMA table_info(conversations)').all() as { name: string }[]).map(c => c.name);
-    if (!cols.includes('mode')) {
-      this.db.exec("ALTER TABLE conversations ADD COLUMN mode TEXT NOT NULL DEFAULT 'classic'");
     }
   }
 
@@ -572,10 +561,14 @@ export class StoreService {
         value TEXT NOT NULL
       );
 
+      -- Databases created while the classic/agentic chat toggle existed also
+      -- carry a legacy "mode" column (NOT NULL DEFAULT 'classic'). It is
+      -- deliberately ignored rather than migrated away: dropping a column
+      -- means rebuilding the table for no behavioral gain, and inserts still
+      -- satisfy it via its default.
       CREATE TABLE IF NOT EXISTS conversations (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
-        mode TEXT NOT NULL DEFAULT 'classic',
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -1165,50 +1158,36 @@ export class StoreService {
   }
 
   // ── Conversations & messages ────────────────────────────────────────────
-
-  private toMode(value: string | undefined): ChatMode {
-    return value === 'agentic' ? 'agentic' : 'classic';
-  }
+  // Note: reads/writes never touch the legacy per-conversation "mode" column
+  // (see the schema comment) — it is dead data on pre-unification databases.
 
   listConversations(): Conversation[] {
     const rows = this.db
-      .prepare('SELECT id, title, mode, created_at, updated_at FROM conversations ORDER BY updated_at DESC')
-      .all() as { id: string; title: string; mode: string; created_at: string; updated_at: string }[];
-    return rows.map(r => ({ id: r.id, title: r.title, mode: this.toMode(r.mode), createdAt: r.created_at, updatedAt: r.updated_at }));
+      .prepare('SELECT id, title, created_at, updated_at FROM conversations ORDER BY updated_at DESC')
+      .all() as { id: string; title: string; created_at: string; updated_at: string }[];
+    return rows.map(r => ({ id: r.id, title: r.title, createdAt: r.created_at, updatedAt: r.updated_at }));
   }
 
   addConversation(conv: Conversation): void {
     this.db
-      .prepare('INSERT INTO conversations (id, title, mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
-      .run(conv.id, conv.title, conv.mode, conv.createdAt, conv.updatedAt);
+      .prepare('INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)')
+      .run(conv.id, conv.title, conv.createdAt, conv.updatedAt);
   }
 
   getConversation(id: string): ConversationDetail | undefined {
     const row = this.db
-      .prepare('SELECT id, title, mode, created_at, updated_at FROM conversations WHERE id = ?')
-      .get(id) as { id: string; title: string; mode: string; created_at: string; updated_at: string } | undefined;
+      .prepare('SELECT id, title, created_at, updated_at FROM conversations WHERE id = ?')
+      .get(id) as { id: string; title: string; created_at: string; updated_at: string } | undefined;
     if (!row) return undefined;
     return {
       id: row.id,
       title: row.title,
-      mode: this.toMode(row.mode),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       messages: this.getMessages(id),
       pinnedDocIds: this.getPins(id),
       attachments: this.getChatAttachments(id),
     };
-  }
-
-  // Lightweight read of just a conversation's chat mode (the message route's
-  // source of truth for which engine to answer with). Undefined if no such row.
-  getConversationMode(id: string): ChatMode | undefined {
-    const row = this.db.prepare('SELECT mode FROM conversations WHERE id = ?').get(id) as { mode: string } | undefined;
-    return row ? this.toMode(row.mode) : undefined;
-  }
-
-  setConversationMode(id: string, mode: ChatMode): boolean {
-    return this.db.prepare('UPDATE conversations SET mode = ? WHERE id = ?').run(mode, id).changes > 0;
   }
 
   touchConversation(id: string, updates: { title?: string; updatedAt: string }): void {

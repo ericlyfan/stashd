@@ -9,10 +9,10 @@ import {
   resolveStage,
 } from '../services/applications';
 
-// Job-application tools for the agentic loop — parity with classic chat:
-// get_applications (read) plus the explicitly-gated writes add_application /
-// move_application / update_application. Compact JSON so results don't blow
-// the context budget; errors return as objects for the tool message.
+// Job-application tools for the agentic loop: get_applications (read) plus
+// the explicitly-gated writes add_application / move_application /
+// update_application. Compact JSON so results don't blow the context budget;
+// errors return as objects for the tool message.
 
 function cleanText(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;

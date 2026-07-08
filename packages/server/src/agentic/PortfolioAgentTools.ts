@@ -2,9 +2,8 @@ import { AgentTool } from './AgenticWorkflow';
 import { StoreService } from '../services/StoreService';
 import { loadSnapshot } from '../services/portfolio';
 
-// Portfolio read tool for the agentic loop — parity with classic chat's
-// get_portfolio. Live-priced per call; compact JSON so it doesn't blow the
-// context budget.
+// Portfolio read tool (get_portfolio) for the agentic loop. Live-priced per
+// call; compact JSON so it doesn't blow the context budget.
 
 export function createPortfolioAgentTools(store: StoreService): AgentTool[] {
   return [

@@ -6,7 +6,17 @@ It is the single living document for **Stashd** — both the _operating manual_ 
 verify, and not break things) and the _architecture & feature reference_ (how it all works). Keep this
 file honest and current; it is the project's memory and the first thing agents load.
 
-_Last updated: 2026-07-07 (**job applications tracker** — new sidebar section `/applications` (§3e):
+_Last updated: 2026-07-08 (**unified hybrid chat** — the per-conversation Classic/Agentic mode is
+gone: **all chat runs through `AgenticChatService` / `AgenticWorkflow`** (§3b), now seeded with a
+**RAG retrieval seed** (top-4 sqlite-vec chunks via the same `EmbeddingService.retrieve` classic
+used, injected into the roster message as `[doc:id]` excerpts; empty seed when embeddings are down —
+never throws); the system prompt treats seed excerpts as unconfirmed starting points and mandates
+`read_doc` before precise citations. **`ChatService.ts` deleted**; `POST /chat` no longer takes
+`mode`, `PATCH /chat/:id` removed, `ChatMode`/`Conversation.mode` dropped from shared types; legacy
+DBs keep a vestigial ignored `mode` column (deliberate no-migration tradeoff). Client: mode toggle /
+mode cards / `stashd.chatMode` localStorage / Agentic history badge all removed. `OLLAMA_MODEL` is
+now classification-only; chat uses `AGENT_OLLAMA_MODEL`.)
+Prior 2026-07-07 (**job applications tracker** — new sidebar section `/applications` (§3e):
 `job_applications` + `application_stages` (customizable pipeline, 5 seeded, `kind` + `is_terminal`
 drive the KPI math) + `application_events` (timestamped status history — stage changes happen only
 via events, never PATCH) + `application_contacts` tables; `routes/applications.ts` +
@@ -102,8 +112,10 @@ npm-workspaces monorepo; three packages under `packages/`.
   - `ClassificationService.ts` — prompt building, model call, taxonomy guards (serialized).
   - `textExtraction.ts` — extension-keyed `extractText` dispatcher + `backfillDerivedFields`.
   - `emailParse.ts` — `.eml`/`.msg` → headers + body + attachments.
-  - `EmbeddingService.ts` — chunk + embed (local Ollama), vector index lifecycle.
-  - `ChatService.ts` — RAG retrieval + tool loop.
+  - `EmbeddingService.ts` — chunk + embed (local Ollama), vector index lifecycle; `retrieve()` is
+    the one sqlite-vec query helper (used by the chat's RAG seed).
+  - `AgenticChatService.ts` — **the** chat engine (classic `ChatService.ts` deleted 2026-07-08):
+    wraps `agentic/AgenticWorkflow` with chat persistence, RAG seed, pins/attachments, SSE events.
   - `QuoteService.ts` — live stock quotes (`fetchQuotes`: Yahoo → Nasdaq(US) → TMX(Canadian)) and daily-close history (`fetchHistory`: Cboe CDN(US) / TMX(Canadian) → Yahoo → Nasdaq), no key, cached, failure-tolerant.
   - `FxService.ts` — foreign-exchange rates (`fetchRates`, Frankfurter → open.er-api → stale → identity) for multi-currency portfolio totals, no key, cached ~1h, failure-tolerant.
   - `MarketService.ts` — market discovery, no key, cached, failure-tolerant: `searchSymbols` (Nasdaq autocomplete for US + the TSX company directory for Canadian, ".TO"-suffixed and re-ranked exact-symbol → companies → ETF wrappers, since the directory ranks Shopify-themed ETFs above Shopify Inc.), `screenSector` (Nasdaq screener, 11 sector tokens), `marketMovers` (US most active / gainers / losers via Nasdaq, plus `canada` = TSX most-active via TMX `getMarketMovers`), `marketPulse` (index-proxy ETFs via `fetchQuotes`), `popularEtfs` (curated shelf, priced live), `stockProfile` (Nasdaq quote-summary / TMX GraphQL fundamentals), `stockNews` (Nasdaq per-symbol RSS, regex-parsed + entity-decoded / TMX news).
@@ -113,8 +125,9 @@ npm-workspaces monorepo; three packages under `packages/`.
   - `applications.ts` — job-application snapshot assembly (`buildApplicationsSnapshot` pure, `loadApplicationsSnapshot` fetches the store): per-application enrichment (resolved stage, last activity, days-in-stage, staleness) + pipeline KPI stats, all derived from the event history; shared by the applications route and the chat get_applications tool. `STALE_DAYS = 14` is the follow-up threshold.
   - `categoryStyle.ts` — auto icon/color for new categories.
 - `providers/` — model-provider registry keyed by `PROVIDER`; `OllamaProvider` is the only impl.
-- `agentic/` — standalone experimental document agent loop (`glm-4.7:cloud` by default) with swappable
-  model/tool/corpus seams; not yet wired to `/chat`.
+- `agentic/` — the agent loop behind `/chat` (`glm-4.7:cloud` by default) with swappable
+  model/tool/corpus seams (`AgenticWorkflow`, `OllamaAgentClient`, the `*AgentTools` factories,
+  `StoreDocumentCorpus`/`FixtureDocumentCorpus`).
 
 **Client** (`packages/client/src/`)
 
@@ -146,7 +159,8 @@ left in `vite.config.ts` are vestigial — no test files, no vitest dependency).
 ```bash
 npm run build --workspace=packages/server   # tsc — emits to dist/
 npm run build --workspace=packages/client   # tsc --noEmit + vite build
-npm run build --workspace=packages/shared   # tsc — emits declarations
+# packages/shared has no build script — it's consumed as source (main: src/index.ts)
+# and type-checked through the server/client builds.
 ```
 
 A clean `tsc` across the touched workspace(s) is the baseline gate. Beyond that, **drive the running
@@ -158,10 +172,11 @@ not claim a change works on a type-check alone if it has runtime behavior.
 Classification (the configured cloud endpoint is `https://ollama.com`):
 
 - `OLLAMA_URL` (default `http://localhost:11434`)
-- `OLLAMA_MODEL` (default `gemma4`) — must be multimodal, JSON-capable, **and tool-capable** (chat uses native tool calling)
+- `OLLAMA_MODEL` (default `gemma4`) — must be multimodal + JSON-capable. **Classification only** —
+  chat no longer uses it (the classic chat engine was removed 2026-07-08).
 - `OLLAMA_API_KEY` (optional), `PORT` (default `3001`), `PROVIDER` (default `ollama`)
 
-Standalone agent experiment (`agentic/`):
+Chat — the agentic loop (`agentic/` + `AgenticChatService`), must be tool-capable:
 
 - `AGENT_OLLAMA_URL` (falls back to `OLLAMA_URL`, then `http://localhost:11434`)
 - `AGENT_OLLAMA_MODEL` (default `glm-4.7:cloud`)
@@ -284,8 +299,9 @@ under `data/temp/<jobId>/`. **Lightweight schema migrations** run at boot via `t
 columns — safe to re-run on an already-migrated database).
 
 **Provider layer** (`providers/`): a registry keyed by the `PROVIDER` env var, with Ollama as the only
-(and fallback) implementation. Classification and chat use the configured (possibly cloud) model;
-embeddings use a separate local Ollama (see Part I env vars).
+(and fallback) implementation — used by **classification** (`OLLAMA_MODEL`). Chat talks to Ollama
+directly through `agentic/OllamaAgentClient` (`AGENT_OLLAMA_MODEL`); embeddings use a separate local
+Ollama (see Part I env vars).
 
 ## 2. Core flow: upload → classify → review → file
 
@@ -379,50 +395,50 @@ rebuilds it on next boot. If the embedding model is unreachable, boot logs a pul
 degrades gracefully (no excerpts, but tools still work). Gotcha: sqlite-vec `vec0` rowids must be bound
 as `BigInt`.
 
-**Answering** (`ChatService.ts`): per user message, the question is embedded and the top 6 chunks (KNN)
-are placed in the system prompt as excerpts tagged `[doc:<id>]`; **pinned documents** (per-conversation,
-full text up to 8k chars each) ride along as primary context. The model (same cloud gemma as
-classification) then runs a native **tool loop** (max 6 rounds, streamed): `search_docs` (FTS),
-`read_doc` (full text, 12k cap), `update_doc` (re-categorize — creating drawers if needed —, add/remove
-tags, flag/unflag; only on explicit user request), `list_categories`, plus the Ledgers tools
-`list_projects` / `read_project` (read) and `create_project` / `add_line_item` (**write** — record a
-cost against a project, creating the ledger first if needed; gated on explicit user request in the
-prompt, same as `update_doc`; `add_line_item` resolves the project by id/name and defaults
-`totalPaid = amountPaid + taxAmount` when omitted, mirroring the line-item dialog) (see §3c), plus
-**`get_portfolio`** (read — the live-priced portfolio snapshot via `services/portfolio.ts
-loadSnapshot`: holdings with weights/returns in native currency, base-currency totals (default CAD),
-and the watchlist with folders + thesis notes; `executeTool` is async for this one), plus
-**`get_applications`** (read — the job-application pipeline via `services/applications.ts
-loadApplicationsSnapshot`: KPI stats, the stage list, and every application with its stage,
-days-in-stage and staleness flag) and the application **write** tools `add_application` /
-`move_application` (stage change → appends a status event, never a direct write) /
-`update_application` (fields/notes; cannot move stages) — same explicit-user-request gating as the
-ledger writes; applications/stages are resolved by loose reference (`resolveApplication` /
-`resolveStage` in `services/applications.ts` — id, unique id prefix, or unique company/name match;
-ambiguity refuses rather than guesses). A
-ledger-write tool triggers a client `refresh()` just like `update_doc`. Answers cite inline as `[doc:<id>]`; the server parses
-these into `citations` (id + name, surviving later doc deletion) and persists tool calls as
-human-readable records. History sent to the model is capped at the last 20 messages.
+**Answering — one hybrid engine** (`AgenticChatService.ts` + `agentic/AgenticWorkflow.ts`; the
+classic `ChatService.ts` was **deleted 2026-07-08**, all conversations now run this loop): per user
+message the service builds context messages — a **roster** system message (today's date + drawers +
+ledgers, so the agent needn't spend a tool round discovering what exists) **carrying the RAG seed**:
+the top **4** chunks from `EmbeddingService.retrieve` (the same sqlite-vec KNN helper classic used —
+there is deliberately only one retrieval helper), formatted as `[doc:<id>] "name" (category)`
+excerpts, pinned docs excluded. The seed keeps common lookups from burning a tool round; the system
+prompt marks it as an **unconfirmed starting point** and mandates `read_doc` before citing a seed
+doc when the excerpt looks partial or the question needs precision (dates, amounts, names, figures).
+If embeddings are unavailable (model not pulled / local Ollama down / init in flight) the seed
+no-ops to empty — never throws (`retrieveSeed` gates on `embeddings.isReady` + catch). **Pinned
+documents** (full text up to 8k chars each) and chat attachments ride along as their own system
+messages. `AgenticWorkflow` (model-agnostic, `OllamaAgentClient` → `AGENT_OLLAMA_MODEL`, default
+`glm-4.7:cloud`) then runs the **tool loop**: hard cap of 6 tool iterations with a final
+tools-disabled fallback call at the step limit, tool errors returned as tool messages, compact JSON
+results (14k truncation backstop), per-step trace events. Tools: `search_docs` (FTS, limit ≤8),
+`read_doc` (8k text cap), `list_categories`, `update_doc` (re-categorize/tag/flag — explicit user
+request only), ledger tools `list_projects` / `read_project` (read, with optional line-item query
+filtering) and `create_project` / `add_line_item` (**write** — same gating; `totalPaid` defaults to
+`amountPaid + taxAmount`), **`get_portfolio`** (live-priced snapshot via `services/portfolio.ts`),
+**`get_applications`** plus the gated application writes `add_application` / `move_application` /
+`update_application` (shared helpers + loose resolution in `services/applications.ts`; ambiguity
+refuses rather than guesses). Answers cite inline as `[doc:<id>]`; the service parses these into
+`citations` (id + name, resolved by unique prefix, surviving doc deletion) and persists tool calls
+as human-readable records. History sent to the model is capped at the last 12 messages.
 
 **Attach a file to just the chat** (chat-only context): dropping a file **onto the chat** (dock or full
 page) attaches it as throwaway context rather than filing it. `POST /chat/:id/attachments` (multer,
 extension-validated) runs the `textExtraction.ts` `extractText` dispatcher, caps the text at 20k, and
 stores a row in `chat_attachments` (conversation-scoped, deleted with the conversation, **never** in the
-stash / FTS / vec index). `getConversation` returns `attachments`, and both `ChatService.buildMessages`
-and `AgenticChatService` inject each attachment's text into the system prompt like a pinned doc (but
-with no `[doc:]` id to cite). **Text-bearing types only** — images carry no extractable text and are
+stash / FTS / vec index). `getConversation` returns `attachments`, and `AgenticChatService` injects
+each attachment's text into the context like a pinned doc (but with no `[doc:]` id to cite). **Text-bearing types only** — images carry no extractable text and are
 rejected (400); a file that yields no text is refused (422). The chat's drop handler `stopPropagation`s
 so the global classify-and-file curtain (`DropZone.tsx`, now `pointer-events:none` and hidden via a
 `body.chat-drag-over` class while dragging over the chat) doesn't also fire.
 
 **Client** — the chat UI is a reusable **`components/ChatSurface.tsx`** (all state/logic: messages,
-pins, attachments, stream, mode, `send()`, SSE, citations) hosted in **two shells**: the full-page
+pins, attachments, stream, `send()`, SSE, citations) hosted in **two shells**: the full-page
 route (`pages/ChatPage.tsx`, a thin wrapper wiring `convId`/`onConvIdChange` to the router) and a
 floating **`components/ChatDock.tsx`** (draggable by its top bar; **resizable from the top and left edges
 + top-left corner** — handles live on the sides away from the toolbar buttons so a bottom-right-docked
 panel grows up/left; rect persisted to `localStorage` `stashd.chatDock`; z-index 90, below modal scrims).
 Its top toolbar is compacted in the dock variant (`.chat-layout--dock`: truncated history title,
-icon-only New chat, tighter mode toggle) so it doesn't overflow the narrow panel; the composer's
+icon-only New chat) so it doesn't overflow the narrow panel; the composer's
 keyboard-hint chips (`↵ send · ⇧↵ line`) are also hidden in the dock — they squeezed the narrow
 input to a sliver (full page keeps them). The **history popover is dock-anchored in the dock**
 (`.chat-layout--dock .chat-hist` goes `position: static` so `.chat-hist-pop` spans the dock and caps
@@ -434,22 +450,20 @@ and its conversation survive navigation. The **corner `ChatLauncher`** opens the
 **Expand** button also hands off to the full page (`/chat/:id`).
 `ChatSurface` takes `variant: 'page' | 'dock'` and optional `onExpand`/`onClose`/`onHeaderPointerDown`.
 The full-page view: a **single-column page** (no second sidebar) under the global nav.
-A slim **top bar** holds a `History ▾` dropdown (past conversations — active highlight, **Agentic**
-badge, relative date, delete; the `HistoryMenu` popover replaced the old "Correspondence" rail) on the
-left, and the mode toggle (thread view only) + a **New chat** button on the right. The active
+A slim **top bar** holds a `History ▾` dropdown (past conversations — active highlight, relative
+date, delete; the `HistoryMenu` popover replaced the old "Correspondence" rail) on the
+left and a **New chat** button on the right. (The Classic/Agentic mode toggle, mode cards, Agentic
+history badge and `stashd.chatMode` localStorage default were **removed 2026-07-08** — there is one
+engine and no stored preference; stale `stashd.chatMode` keys in old browsers are simply never read.)
+The active
 conversation renders as a single "sheet" card — an **On the desk** pinned-docs tray along its top edge,
-the thread as ledger entries, and the composer as the sheet's footer. **Chat mode is per conversation,
-not global.** Each conversation stores a `mode` (**Current** = `ChatService` / **Agentic** =
-`AgenticChatService`) — fixed when the chat is started and switchable later from the top bar (a
-`PATCH /chat/:id` persists it). The message route reads the *stored* conversation mode as the source of
-truth, so messages no longer carry `mode`. **The page always opens on a centered New Chat start
-screen** (a **dynamic greeting** counting your documents/drawers/flagged, two mode cards with blurbs,
+the thread as ledger entries, and the composer as the sheet's footer. **The page always opens on a
+centered New Chat start screen** (a **dynamic greeting** counting your documents/drawers/flagged,
 composer, and **stash-grounded suggestions** drawn from your newest doc, a paid vendor, flagged
 backlog, fullest drawer, an active ledger and a recurring tag — `stashSuggestions`): the `/chat` route
 has no id, and both the sidebar "Ask the stash" link and the top-bar **New chat** button navigate
-there; sending the first message creates the conversation and transitions to the sheet. The mode picker
-seeds from a `stashd.chatMode` localStorage default (the last mode you chose) so new chats start where
-you left off. Markdown-lite rendering covers paragraphs, bullets, **bold**, `###` headings and pipe tables
+there; sending the first message creates the conversation and transitions to the sheet.
+Markdown-lite rendering covers paragraphs, bullets, **bold**, `###` headings and pipe tables
 (deliberately not a markdown engine); citation markers become chips linking to `/doc/:id`, with a
 "sources" footer per answer, and tool calls render as a mono work-log above the answer. **Citation ids
 are matched loosely and resolved by unique prefix** (client and server both) because the model sometimes
@@ -457,29 +471,20 @@ drops trailing UUID characters. Text streamed before a tool round is treated as 
 discarded when the `tool` event arrives; an `update_doc` tool call triggers a store `refresh()`. SSE for
 the answer comes over a `fetch` POST stream (EventSource can't POST).
 
-**Agentic chat prototype** (`agentic/` + `AgenticChatService`): an experimental loop available in
-`/chat` via the **Agentic** mode toggle. `AgenticWorkflow` is model-agnostic and enforces the
-reliability rails: strong retrieval-first system prompt, a hard tool-iteration cap (default 6), tool
-errors returned as tool messages, compact JSON tool results, and per-step trace events.
-`OllamaAgentClient` talks to Ollama `/api/chat` with `glm-4.7:cloud` by default. The tool set now
-reaches parity with the classic chat: document tools (`search_docs`, `read_doc`, `list_categories`,
-and `update_doc` — re-categorize / tag / flag, gated on explicit user request in the system prompt) and
-ledger tools (`list_projects`, `read_project`, including optional line-item filtering such as project
-`4190` + query `Costco`, plus the **write** tools `create_project` / `add_line_item` — same gating and
-`totalPaid` defaulting as classic), the portfolio read tool (`get_portfolio`,
-`agentic/PortfolioAgentTools.ts`) and the application tools (`agentic/ApplicationAgentTools.ts`:
-`get_applications` read + the gated writes `add_application` / `move_application` /
-`update_application` — same shared action/resolution helpers as classic). Document tools go through the `AgentDocumentCorpus` seam: `StoreDocumentCorpus`
-adapts the real `StoreService` (and resolves a truncated/prefix doc id the way citations do), while
-`FixtureDocumentCorpus` supports standalone smoke tests without a database or live model.
-`AgenticChatService` wraps this loop with normal chat persistence, pinned-doc context, a lightweight
-roster context message (today's date + drawers + ledgers, so the agent need not spend a tool round to
-learn what exists), loose citation extraction and SSE-compatible tool/done events. It **streams model
-tokens** like classic chat: an `onToken` handler threads from `AgenticChatService` → `AgenticWorkflow.run`
-→ `OllamaAgentClient` (which switches to `stream: true` and parses the NDJSON), forwarding `token`
-events as they arrive. Tokens stream every round; a round that ends in a tool call has its deliberation
-text discarded client-side on the `tool` event (same as classic). An `update_doc` tool event drives the
-same client `refresh()` as classic mode.
+**Engine internals** (`agentic/`): `AgenticWorkflow` is model-agnostic and enforces the reliability
+rails (tool-iteration cap + tools-disabled fallback, tool errors as tool messages, compact JSON
+results, per-step trace events); `OllamaAgentClient` talks to Ollama `/api/chat`. Document tools go
+through the `AgentDocumentCorpus` seam: `StoreDocumentCorpus` adapts the real `StoreService` (and
+resolves a truncated/prefix doc id the way citations do), while `FixtureDocumentCorpus` supports
+standalone smoke runs without a database, live model, or embeddings (constructed directly, it gets
+no RAG seed — the seed lives in `AgenticChatService`, not the workflow, precisely so the workflow
+stays corpus-agnostic). Answers **stream token-by-token**: an `onToken` handler threads from
+`AgenticChatService` → `AgenticWorkflow.run` → `OllamaAgentClient` (`stream: true`, NDJSON),
+forwarding `token` SSE events as they arrive. Tokens stream every round; a round that ends in a tool
+call has its deliberation text discarded client-side on the `tool` event. Write-tool events drive
+the client `refresh()` (documents/ledgers) or the `stashd:applications-changed` window event
+(applications) exactly as before — the SSE protocol and client event handling were untouched by the
+2026-07-08 unification.
 
 ## 3c. Ledgers — project cost tracking
 
@@ -734,8 +739,8 @@ the resume sent, the JD, an offer letter — nulled in `removeDocument`'s transa
   title, email, url, notes). Cascade-deleted with the application.
 
 **Chat integration**: `get_applications` (read) plus `add_application` / `move_application` /
-`update_application` (writes, explicit-request-gated) exist in **both** chat engines; the action +
-loose-resolution logic lives in `services/applications.ts` (`createJobApplication`,
+`update_application` (writes, explicit-request-gated) live in `agentic/ApplicationAgentTools.ts`;
+the action + loose-resolution logic lives in `services/applications.ts` (`createJobApplication`,
 `moveJobApplication`, `realignApplicationStage`, `resolveApplication`, `resolveStage`) and the HTTP
 route delegates to the same helpers. Client-side, a chat write dispatches a
 `stashd:applications-changed` window event (see `APP_WRITE_TOOLS` in `ChatSurface.tsx`) that
@@ -882,9 +887,8 @@ Components call API functions from `api.ts` directly and then `refresh()`.
 | `PATCH /categories/:id`                          | rename / re-icon / re-color / pin (`pinned`)                                                                         |
 | `PATCH /categories/reorder`                      | persist manual drawer order `{ ids }` (declared before `:id` so "reorder" isn't read as an id)                       |
 | `DELETE /categories/:id`                         | delete (custom + empty only)                                                                                         |
-| `GET /chat` / `POST /chat`                       | list conversations / start one (`{ mode? }` — `classic`/`agentic`, fixed per conversation)                          |
-| `GET /chat/:id` / `DELETE /chat/:id`             | conversation with messages + pins + attachments (+ `mode`) / delete it                                              |
-| `PATCH /chat/:id`                                | switch the conversation's chat mode `{ mode }`                                                                       |
+| `GET /chat` / `POST /chat`                       | list conversations / start one (`{ title? }`; a legacy `mode` in the body is ignored)                               |
+| `GET /chat/:id` / `DELETE /chat/:id`             | conversation with messages + pins + attachments / delete it                                                         |
 | `PUT /chat/:id/pins`                             | replace pinned-document list `{ docIds }`                                                                            |
 | `POST /chat/:id/attachments`                     | multipart: drop a file into the conversation as chat-only context (extracted text; not filed; images 400, no-text 422) |
 | `DELETE /chat/:id/attachments/:attId`            | remove a chat attachment; 204                                                                                        |

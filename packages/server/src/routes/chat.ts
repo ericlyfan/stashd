@@ -7,20 +7,17 @@ import { mkdtemp, rm, writeFile } from 'fs/promises';
 import {
   Conversation,
   ChatSSEEvent,
-  ChatMode,
   ChatAttachment,
   extensionOf,
   isSupportedFilename,
   mimeFromExtension,
 } from '@stashd/shared';
 import { StoreService } from '../services/StoreService';
-import { ChatService } from '../services/ChatService';
 import { AgenticChatService } from '../services/AgenticChatService';
 import { extractText } from '../services/textExtraction';
 
 interface Services {
   store: StoreService;
-  chatService: ChatService;
   agenticChatService: AgenticChatService;
 }
 
@@ -31,7 +28,7 @@ const ATTACHMENT_TEXT_CAP = 20000;
 const IMAGE_EXTS = new Set(['jpg', 'jpeg', 'png', 'heic', 'heif', 'webp']);
 
 export function createChatRoutes(services: Services): Router {
-  const { store, chatService, agenticChatService } = services;
+  const { store, agenticChatService } = services;
   const router = Router();
 
   const upload = multer({
@@ -46,14 +43,14 @@ export function createChatRoutes(services: Services): Router {
     res.json(store.listConversations());
   });
 
-  // POST /api/chat — start a conversation (mode is fixed per conversation)
+  // POST /api/chat — start a conversation. A legacy `mode` in the body (from
+  // the retired classic/agentic toggle) is silently ignored.
   router.post('/', (req, res) => {
-    const { title, mode } = (req.body ?? {}) as { title?: string; mode?: string };
+    const { title } = (req.body ?? {}) as { title?: string };
     const now = new Date().toISOString();
     const conversation: Conversation = {
       id: uuidv4(),
       title: typeof title === 'string' && title.trim() ? title.trim() : 'New conversation',
-      mode: mode === 'agentic' ? 'agentic' : 'classic',
       createdAt: now,
       updatedAt: now,
     };
@@ -66,18 +63,6 @@ export function createChatRoutes(services: Services): Router {
     const conversation = store.getConversation(req.params.id);
     if (!conversation) return res.status(404).json({ error: 'Conversation not found' });
     res.json(conversation);
-  });
-
-  // PATCH /api/chat/:id — change the conversation's chat mode
-  router.patch('/:id', (req, res) => {
-    const { mode } = req.body as { mode?: string };
-    if (mode !== 'classic' && mode !== 'agentic') {
-      return res.status(400).json({ error: "mode must be 'classic' or 'agentic'" });
-    }
-    if (!store.setConversationMode(req.params.id, mode)) {
-      return res.status(404).json({ error: 'Conversation not found' });
-    }
-    res.json({ mode });
   });
 
   // DELETE /api/chat/:id
@@ -160,9 +145,6 @@ export function createChatRoutes(services: Services): Router {
     if (typeof content !== 'string' || !content.trim()) {
       return res.status(400).json({ error: 'content is required' });
     }
-    // The conversation's stored mode is the source of truth for which engine
-    // answers — set when the chat was started, switchable via PATCH.
-    const chatMode: ChatMode = store.getConversationMode(req.params.id) ?? 'classic';
 
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
@@ -170,7 +152,7 @@ export function createChatRoutes(services: Services): Router {
     res.flushHeaders();
 
     const send = (event: ChatSSEEvent) => res.write(`data: ${JSON.stringify(event)}\n\n`);
-    await (chatMode === 'agentic' ? agenticChatService : chatService).respond(req.params.id, content.trim(), send);
+    await agenticChatService.respond(req.params.id, content.trim(), send);
     res.end();
   });
 
