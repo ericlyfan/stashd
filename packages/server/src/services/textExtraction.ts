@@ -10,8 +10,16 @@ import { perceptualHashFile, simhash64 } from './nearDuplicate';
 // Keep stored text bounded: enough for search, not the whole book.
 export const MAX_EXTRACTED_CHARS = 20_000;
 
+// Collapse horizontal whitespace but keep line structure: the email viewer
+// splits stored text on '\n' to rebuild headers/body, and chunkText prefers
+// paragraph/newline boundaries when splitting for embeddings.
 export function truncateText(text: string): string {
-  const trimmed = text.replace(/\s+/g, ' ').trim();
+  const trimmed = text
+    .replace(/\r\n?/g, '\n')
+    .replace(/[^\S\n]+/g, ' ')
+    .replace(/ ?\n ?/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
   return trimmed.length > MAX_EXTRACTED_CHARS ? trimmed.slice(0, MAX_EXTRACTED_CHARS) : trimmed;
 }
 
@@ -127,6 +135,15 @@ export async function backfillDerivedFields(
     if (doc.extractedText === undefined) {
       const text = await extractText(fileService.absolutePath(doc.storagePath), doc.fileType);
       if (text) updates.extractedText = text;
+    } else if (!doc.extractedText.includes('\n')) {
+      // Text stored before 2026-07-09 had every newline collapsed to a space
+      // (the old truncateText), which broke the email viewer's header/body
+      // split and chunkText's paragraph breaks. Re-extract to restore line
+      // structure; a doc whose text is genuinely one line re-extracts to the
+      // same string and is left alone. Images return undefined here, so their
+      // classify-time transcription is never touched.
+      const text = await extractText(fileService.absolutePath(doc.storagePath), doc.fileType);
+      if (text && text !== doc.extractedText) updates.extractedText = text;
     }
     if (doc.contentHash === undefined) {
       try {
@@ -139,9 +156,11 @@ export async function backfillDerivedFields(
     // Near-dup signatures for the pre-existing corpus so re-uploads match it.
     // SimHash reads whatever text we have (just-extracted or already stored);
     // the perceptual hash decodes images from disk (a no-op for other types).
-    if (doc.simHash === undefined) {
+    // Recomputed whenever the text was re-extracted so it matches what new
+    // uploads hash.
+    if (doc.simHash === undefined || updates.extractedText !== undefined) {
       const sim = simhash64(updates.extractedText ?? doc.extractedText);
-      if (sim) updates.simHash = sim;
+      if (sim && sim !== doc.simHash) updates.simHash = sim;
     }
     if (doc.perceptualHash === undefined) {
       const pHash = await perceptualHashFile(fileService.absolutePath(doc.storagePath), doc.fileType);
@@ -150,6 +169,10 @@ export async function backfillDerivedFields(
 
     if (Object.keys(updates).length > 0) {
       store.updateDocument(doc.id, updates);
+      // Changed text invalidates the doc's embedding chunks; dropping them
+      // here lets EmbeddingService.init() (which runs right after this
+      // backfill) re-chunk with the restored line structure.
+      if (updates.extractedText !== undefined) store.deleteDocChunks(doc.id);
       changed++;
     }
   }

@@ -5,16 +5,27 @@ export function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+// Parse a date string without the UTC-midnight trap: a bare "YYYY-MM-DD"
+// (datePaid, appliedDate, dateExtracted…) is read as *local noon* — plain
+// new Date('2026-06-01') is UTC midnight, which is May 31 locally anywhere
+// west of Greenwich, shifting month buckets and displayed dates back a day.
+// Full ISO timestamps parse normally.
+export function parseDay(value: string): Date {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
+  if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12);
+  return new Date(value);
+}
+
 export function formatDate(iso?: string | null): string {
   if (!iso) return "—";
-  const d = new Date(iso);
+  const d = parseDay(iso);
   if (isNaN(d.getTime())) return "—";
   return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
 }
 
 export function relTime(iso?: string | null): string {
   if (!iso) return "";
-  const d = new Date(iso);
+  const d = parseDay(iso);
   if (isNaN(d.getTime())) return "";
   const days = Math.floor((Date.now() - d.getTime()) / (24 * 60 * 60 * 1000));
   if (days <= 0) return "today";

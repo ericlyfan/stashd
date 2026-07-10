@@ -32,6 +32,10 @@ export interface Document {
   // until backfilled. See services/nearDuplicate.ts.
   simHash?: string;
   perceptualHash?: string;
+  // Set by boot reconciliation when the stored file is missing on disk: the
+  // row is quarantined (hidden from lists/search/counts, never deleted) and
+  // revived automatically if the file reappears.
+  missingSince?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -125,12 +129,33 @@ export interface Citation {
   name: string;
 }
 
+// Lifecycle of a write-tool proposal (confirm-before-apply): the agent's
+// write tools never mutate the stash directly — each call is queued as a
+// pending action the user must apply from the chat UI. Enforced server-side:
+// only POST /chat/:id/actions/:actionId executes the server-stored args.
+export type ChatActionStatus = "pending" | "applied" | "declined" | "failed";
+
+// The resolve endpoint's response — the card's new state.
+export interface ChatActionResolution {
+  actionId: string;
+  status: ChatActionStatus;
+  resultSummary?: string;
+}
+
 // A tool invocation the assistant made while answering, kept for display
-// ("looked through the stash", "moved X to receipts…").
+// ("looked through the stash", "moved X to receipts…"). Write-tool calls are
+// proposals: they carry an `actionId` + `status` and render as approval cards
+// instead of work-log lines. Statuses are overlaid fresh on every
+// conversation read, so a card resolved after the message was written still
+// shows its current state.
 export interface ToolCallRecord {
   tool: string;
   args: Record<string, unknown>;
   summary: string;
+  actionId?: string;
+  status?: ChatActionStatus;
+  // Outcome text once applied/failed ("Updated 'x.pdf': moved to receipts").
+  resultSummary?: string;
 }
 
 export interface ChatMessage {
@@ -353,6 +378,11 @@ export interface HoldingWithQuote extends Holding {
   dayChange?: number; // shares × (price − previousClose)
   dayChangePct?: number;
   quoteCurrency?: string;
+  // True when the lot history is internally inconsistent (a sell exceeded the
+  // shares held at that point — e.g. the buy backing it was deleted). The
+  // position is clamped to a non-negative state rather than rejected, so reads
+  // still succeed; the UI can surface this as "check this holding's transactions".
+  positionInvalid?: boolean;
 }
 
 // Portfolio-wide rollups, computed per request — never persisted. Money sums use
@@ -377,7 +407,11 @@ export interface PortfolioSnapshot {
   quotedAt: string; // when quotes were fetched
   quotesLive: boolean; // false when the provider returned nothing (offline/blocked)
   baseCurrency: string; // currency the totals are expressed in
-  fxLive: boolean; // false when FX rates were unavailable (totals then unconverted)
+  fxLive: boolean; // false when FX rates weren't fetched fresh this hour
+  // true when conversions used the last good rate table (≤24h old) because
+  // every FX source was unreachable — amounts ARE converted, just from stale
+  // rates. fxLive:false + fxStale:false means identity rates (unconverted).
+  fxStale: boolean;
 }
 
 // ── Per-stock history ────────────────────────────────────────────────────────

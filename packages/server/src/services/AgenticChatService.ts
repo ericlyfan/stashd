@@ -1,9 +1,19 @@
 import { v4 as uuidv4 } from 'uuid';
-import { ChatAttachment, ChatMessage, ChatSSEEvent, Citation, Document, ToolCallRecord } from '@stashd/shared';
+import {
+  ChatActionResolution,
+  ChatAttachment,
+  ChatMessage,
+  ChatSSEEvent,
+  Citation,
+  Document,
+  ToolCallRecord,
+} from '@stashd/shared';
 import { StoreService } from './StoreService';
 import { EmbeddingService, RetrievedChunk } from './EmbeddingService';
+import { resolveApplication, resolveStage } from './applications';
 import {
   AgentMessage,
+  AgentTool,
   AgentTraceEvent,
   AgentTraceSink,
   AgenticWorkflow,
@@ -11,6 +21,7 @@ import {
   createDocumentAgentTools,
   createPortfolioAgentTools,
   createProjectAgentTools,
+  formatToolResult,
   OllamaAgentClient,
   StoreDocumentCorpus,
 } from '../agentic';
@@ -27,7 +38,109 @@ function preview(text: string, limit = 180): string {
   return compact.length <= limit ? compact : `${compact.slice(0, limit)}...`;
 }
 
+// The agent's write tools, all gated behind confirm-before-apply: a call to
+// any of these is persisted as a pending action and surfaced as an approval
+// card — it never mutates the store until the user applies it. A new write
+// tool MUST be added here (and to the client's APP_WRITE/STORE_WRITE sets in
+// ChatSurface.tsx), or it ships ungated.
+const WRITE_TOOLS = new Set([
+  'update_doc',
+  'create_project',
+  'add_line_item',
+  'add_application',
+  'move_application',
+  'update_application',
+]);
+
+function str(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function strList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string' && !!v.trim()) : [];
+}
+
+function num(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+// Best-effort human preview of a proposed write, resolved against the store
+// (doc names, current stages) so the approval card shows what will actually
+// change. Falls back to the raw args; the real resolution/validation happens
+// again at apply time, so an inaccurate preview can't cause a wrong write.
+function proposalSummary(store: StoreService, tool: string, args: Record<string, unknown>): string {
+  switch (tool) {
+    case 'update_doc': {
+      const rawId = str(args.doc_id);
+      let doc = store.getDocument(rawId);
+      if (!doc && rawId) {
+        const matches = store.getDocuments().filter(d => d.id.startsWith(rawId));
+        if (matches.length === 1) doc = matches[0];
+      }
+      const target = doc ? `“${doc.originalName}”` : `document ${rawId || '(unspecified)'}`;
+      const parts: string[] = [];
+      if (str(args.category)) parts.push(`move to ${str(args.category)}`);
+      const addTags = strList(args.add_tags);
+      if (addTags.length) parts.push(`add tag${addTags.length > 1 ? 's' : ''} ${addTags.join(', ')}`);
+      const removeTags = strList(args.remove_tags);
+      if (removeTags.length) parts.push(`remove tag${removeTags.length > 1 ? 's' : ''} ${removeTags.join(', ')}`);
+      if (typeof args.flag === 'boolean') parts.push(args.flag ? 'flag for review' : 'resolve the review flag');
+      return `Update ${target}: ${parts.join(' · ') || '(no changes listed)'}`;
+    }
+    case 'create_project':
+      return `Create ledger “${str(args.name) || '(unnamed)'}”`;
+    case 'add_line_item': {
+      const key = str(args.project);
+      const lower = key.toLowerCase();
+      const project = store
+        .listProjects()
+        .find(p => p.id === key || p.name.toLowerCase() === lower || p.name.toLowerCase().includes(lower));
+      const amount = num(args.total_paid) ?? (num(args.amount_paid) !== undefined ? num(args.amount_paid)! + (num(args.tax_amount) ?? 0) : undefined);
+      const bits = [str(args.description) || '(no description)'];
+      if (str(args.vendor)) bits.push(str(args.vendor));
+      if (amount !== undefined) bits.push(`$${amount.toLocaleString()}`);
+      return `Add to ledger “${project?.name ?? (key || '(unspecified)')}”: ${bits.join(' — ')}`;
+    }
+    case 'add_application':
+      return `Add application: ${str(args.company) || '(no company)'} — ${str(args.role) || '(no role)'}`;
+    case 'move_application': {
+      const app = resolveApplication(store, str(args.application));
+      const stage = resolveStage(store, str(args.stage));
+      const from = app ? store.getApplicationStage(app.stageId)?.name : undefined;
+      const who = app ? `${app.company} — ${app.role}` : `“${str(args.application)}”`;
+      return `Move application ${who}${from ? ` from ${from}` : ''} to ${stage?.name ?? `“${str(args.stage)}”`}`;
+    }
+    case 'update_application': {
+      const app = resolveApplication(store, str(args.application));
+      const fields = Object.keys(args).filter(k => k !== 'application' && str(args[k]));
+      const who = app ? `${app.company} — ${app.role}` : `“${str(args.application)}”`;
+      return `Update application ${who}${fields.length ? ` (${fields.join(', ')})` : ''}`;
+    }
+    default:
+      return `Run ${tool}`;
+  }
+}
+
 function summarizeTool(event: Extract<AgentTraceEvent, { type: 'tool_result' }>): ToolCallRecord {
+  // Write-tool proposals: the gate queues them instead of executing, and its
+  // result carries the pending-action id + human summary for the approval
+  // card. Checked first so the per-tool branches below (which describe an
+  // executed change) never claim a queued one happened.
+  try {
+    const parsed = JSON.parse(event.result) as { queued?: unknown; actionId?: unknown; summary?: unknown };
+    if (parsed.queued === true && typeof parsed.actionId === 'string') {
+      return {
+        tool: event.tool,
+        args: event.args,
+        summary: typeof parsed.summary === 'string' ? parsed.summary : `Proposed a ${event.tool} change`,
+        actionId: parsed.actionId,
+        status: 'pending',
+      };
+    }
+  } catch {
+    // Not JSON — fall through to the generic summaries.
+  }
+
   if (event.tool === 'search_docs') {
     const query = typeof event.args.query === 'string' ? event.args.query : '';
     let count: number | undefined;
@@ -240,16 +353,12 @@ export class AgenticChatService {
     try {
       const agent = new AgenticWorkflow(
         new OllamaAgentClient(),
-        [
-          ...createProjectAgentTools(this.store),
-          ...createDocumentAgentTools(new StoreDocumentCorpus(this.store)),
-          ...createPortfolioAgentTools(this.store),
-          ...createApplicationAgentTools(this.store),
-        ],
+        this.gateWriteTools(this.buildTools(), conversationId),
         traceSink,
       );
       const result = await agent.run(userText, {
         contextMessages: await this.contextMessages(
+          conversationId,
           conversation.messages,
           conversation.pinnedDocIds,
           conversation.attachments,
@@ -286,7 +395,115 @@ export class AgenticChatService {
     }
   }
 
+  // Every tool the chat agent can use. Also the executor set for approved
+  // write proposals — resolveAction runs the same implementations, ungated.
+  private buildTools(): AgentTool[] {
+    return [
+      ...createProjectAgentTools(this.store),
+      ...createDocumentAgentTools(new StoreDocumentCorpus(this.store)),
+      ...createPortfolioAgentTools(this.store),
+      ...createApplicationAgentTools(this.store),
+    ];
+  }
+
+  // Confirm-before-apply, enforced server-side: a write tool handed to the
+  // workflow never executes. It persists a pending action (tool + args +
+  // preview summary) and tells the model the change is queued; the store
+  // mutation happens only in resolveAction, from the server-stored args, so
+  // there is no code path from model output (or a UI-skipping client) to the
+  // store.
+  private gateWriteTools(tools: AgentTool[], conversationId: string): AgentTool[] {
+    return tools.map(tool => {
+      if (!WRITE_TOOLS.has(tool.name)) return tool;
+      return {
+        ...tool,
+        execute: (args: Record<string, unknown>) => {
+          const summary = proposalSummary(this.store, tool.name, args ?? {});
+          const action = {
+            id: uuidv4(),
+            conversationId,
+            tool: tool.name,
+            args: args ?? {},
+            summary,
+            createdAt: new Date().toISOString(),
+          };
+          this.store.addChatAction(action);
+          return {
+            ok: true,
+            queued: true,
+            actionId: action.id,
+            summary,
+            note:
+              'Queued for user approval — NOT applied yet. The user sees an approval card for exactly this change and can apply or dismiss it. Tell the user what you proposed and that it awaits their approval; never claim it already happened.',
+          };
+        },
+      };
+    });
+  }
+
+  // The only code path that executes a proposed write. Runs the same tool
+  // implementation the agent saw — ungated, with the server-stored args; the
+  // client sends only the action id, so a bypassing client has nothing to
+  // forge. Double-submits are safe: tool bodies are synchronous store calls
+  // (no real I/O between the pending-status check and the resolve), so a
+  // second request can't interleave, and it 409s on the resolved status.
+  async resolveAction(
+    conversationId: string,
+    actionId: string,
+    approve: boolean,
+  ): Promise<{ ok: true; resolution: ChatActionResolution } | { ok: false; code: number; error: string }> {
+    const action = this.store.getChatAction(actionId);
+    if (!action || action.conversationId !== conversationId) {
+      return { ok: false, code: 404, error: 'Action not found' };
+    }
+    if (action.status !== 'pending') {
+      return { ok: false, code: 409, error: `This change was already ${action.status}` };
+    }
+
+    if (!approve) {
+      this.store.resolveChatAction(actionId, 'declined');
+      return { ok: true, resolution: { actionId, status: 'declined' } };
+    }
+
+    const tool = this.buildTools().find(t => t.name === action.tool);
+    if (!tool) {
+      const error = `Tool no longer available: ${action.tool}`;
+      this.store.resolveChatAction(actionId, 'failed', error);
+      return { ok: true, resolution: { actionId, status: 'failed', resultSummary: error } };
+    }
+
+    let result: unknown;
+    try {
+      result = await tool.execute(action.args);
+    } catch (err) {
+      result = { ok: false, error: err instanceof Error ? err.message : 'The change could not be applied' };
+    }
+    const failed =
+      typeof result === 'object' && result !== null && (result as { ok?: unknown }).ok === false
+        ? String((result as { error?: unknown }).error ?? 'The change could not be applied')
+        : undefined;
+    if (failed) {
+      this.store.resolveChatAction(actionId, 'failed', failed);
+      return { ok: true, resolution: { actionId, status: 'failed', resultSummary: failed } };
+    }
+
+    // Reuse the display summarizer for the receipt, minus its "Agent ..."
+    // framing — the user applied this one.
+    const raw = summarizeTool({
+      type: 'tool_result',
+      runId: 'apply',
+      step: 0,
+      tool: action.tool,
+      args: action.args,
+      result: formatToolResult(result),
+    }).summary.replace(/^Agent /, '');
+    const resultSummary = raw.charAt(0).toUpperCase() + raw.slice(1);
+    this.store.resolveChatAction(actionId, 'applied', resultSummary);
+    return { ok: true, resolution: { actionId, status: 'applied', resultSummary } };
+  }
+
   private async contextMessages(
+    conversationId: string,
     history: ChatMessage[],
     pinnedDocIds: string[],
     attachments: ChatAttachment[],
@@ -303,10 +520,28 @@ export class AgenticChatService {
     const attachmentMsg = attachmentContext(attachments);
     if (attachmentMsg) messages.push(attachmentMsg);
 
+    const actionsMsg = this.actionStatusContext(conversationId);
+    if (actionsMsg) messages.push(actionsMsg);
+
     for (const msg of history.slice(-HISTORY_LIMIT)) {
       messages.push({ role: msg.role, content: msg.content });
     }
     return messages;
+  }
+
+  // Keep the agent honest about its earlier proposals: without this it would
+  // have no way to know whether a queued write was ever applied. Statuses are
+  // read fresh each turn.
+  private actionStatusContext(conversationId: string): AgentMessage | undefined {
+    const actions = this.store.getChatActions(conversationId).slice(-10);
+    if (!actions.length) return undefined;
+    const lines = actions.map(
+      a => `- [${a.status}] ${a.summary}${a.status === 'failed' && a.resultSummary ? ` (${a.resultSummary})` : ''}`,
+    );
+    return {
+      role: 'system',
+      content: `Changes you proposed earlier in this conversation, with their current status — "pending" means still awaiting the user's approval and NOT applied; "declined" means the user dismissed it (do not re-propose unless asked again); "applied" means it happened:\n${lines.join('\n')}`,
+    };
   }
 
   // The RAG seed: the same sqlite-vec retrieval the classic chat used

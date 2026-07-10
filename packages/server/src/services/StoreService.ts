@@ -9,6 +9,7 @@ import {
   SearchHit,
   Conversation,
   ConversationDetail,
+  ChatActionStatus,
   ChatAttachment,
   ChatMessage,
   Project,
@@ -83,6 +84,7 @@ interface DocumentRow {
   content_hash: string | null;
   sim_hash: string | null;
   perceptual_hash: string | null;
+  missing_since: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -119,6 +121,7 @@ function rowToDocument(row: DocumentRow): Document {
     contentHash: row.content_hash ?? undefined,
     simHash: row.sim_hash ?? undefined,
     perceptualHash: row.perceptual_hash ?? undefined,
+    missingSince: row.missing_since ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -133,6 +136,46 @@ function rowToCategory(row: CategoryRow): Category {
     isCustom: row.is_custom === 1,
     pinned: row.pinned === 1,
     position: row.position ?? 0,
+  };
+}
+
+// A queued write-tool proposal (confirm-before-apply). Server-side only —
+// the client sees these through ToolCallRecord's actionId/status fields.
+export interface ChatPendingAction {
+  id: string;
+  conversationId: string;
+  tool: string;
+  args: Record<string, unknown>;
+  summary: string;
+  status: ChatActionStatus;
+  resultSummary?: string;
+  createdAt: string;
+  resolvedAt?: string;
+}
+
+interface ChatPendingActionRow {
+  id: string;
+  conversation_id: string;
+  tool: string;
+  args: string;
+  summary: string;
+  status: string;
+  result_summary: string | null;
+  created_at: string;
+  resolved_at: string | null;
+}
+
+function actionFromRow(row: ChatPendingActionRow): ChatPendingAction {
+  return {
+    id: row.id,
+    conversationId: row.conversation_id,
+    tool: row.tool,
+    args: JSON.parse(row.args) as Record<string, unknown>,
+    summary: row.summary,
+    status: row.status as ChatActionStatus,
+    resultSummary: row.result_summary ?? undefined,
+    createdAt: row.created_at,
+    resolvedAt: row.resolved_at ?? undefined,
   };
 }
 
@@ -427,6 +470,14 @@ export class StoreService {
     this.migrateDocumentColumns();
     this.migrateWatchlistColumns();
     this.migrateFromManifest();
+    // Ghost-pin cleanup: document deletion didn't remove conversation_pins
+    // rows before 2026-07-09, so old databases carry pins for docs that no
+    // longer exist. Idempotent; quarantined docs still have rows, so their
+    // pins survive.
+    const ghostPins = this.db
+      .prepare('DELETE FROM conversation_pins WHERE doc_id NOT IN (SELECT id FROM documents)')
+      .run().changes;
+    if (ghostPins > 0) console.log(`Removed ${ghostPins} chat pin(s) pointing at deleted documents`);
     if ((this.db.prepare('SELECT COUNT(*) AS n FROM categories').get() as { n: number }).n === 0) {
       for (const cat of DEFAULT_CATEGORIES) this.addCategory(cat);
     }
@@ -467,6 +518,14 @@ export class StoreService {
     }
     if (!cols.includes('perceptual_hash')) {
       this.db.exec('ALTER TABLE documents ADD COLUMN perceptual_hash TEXT');
+    }
+    // Quarantine marker: set when boot reconciliation finds the row's file
+    // missing on disk. Quarantined rows are hidden from listings/search/counts
+    // but never deleted — the row (metadata, text, links) survives a moved or
+    // partially-restored data dir, and reconciliation revives it the moment
+    // the file reappears.
+    if (!cols.includes('missing_since')) {
+      this.db.exec('ALTER TABLE documents ADD COLUMN missing_since TEXT');
     }
   }
 
@@ -600,6 +659,24 @@ export class StoreService {
         created_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_chat_attachments_conversation ON chat_attachments(conversation_id);
+
+      -- Write-tool proposals from the chat agent, awaiting user approval
+      -- (confirm-before-apply). The agent's write tools never mutate the
+      -- stash: a call lands here as a pending row, and only the approval
+      -- endpoint executes the stored args server-side. Cascade-deleted with
+      -- the conversation.
+      CREATE TABLE IF NOT EXISTS chat_pending_actions (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        tool TEXT NOT NULL,
+        args TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        result_summary TEXT,
+        created_at TEXT NOT NULL,
+        resolved_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_chat_pending_actions_conversation ON chat_pending_actions(conversation_id);
 
       -- Ledgers: cost-tracking projects and their line items. Largely
       -- independent of documents; document_id is a nullable, advisory link.
@@ -779,11 +856,29 @@ export class StoreService {
 
   // ── Documents ───────────────────────────────────────────────────────────
 
+  // Quarantined rows (missing_since set — file gone from disk) are excluded
+  // from every list/search/count surface: they shouldn't render in the UI or
+  // match duplicates while their file is missing. getDocument(id) still
+  // returns them (their metadata/text is real data, and reconciliation needs
+  // the row), and getDocumentsIncludingMissing is the reconciliation view.
   getDocuments(categoryId?: CategoryId): Document[] {
     const rows = categoryId
-      ? this.db.prepare('SELECT * FROM documents WHERE category = ? ORDER BY rowid').all(categoryId)
-      : this.db.prepare('SELECT * FROM documents ORDER BY rowid').all();
+      ? this.db.prepare('SELECT * FROM documents WHERE missing_since IS NULL AND category = ? ORDER BY rowid').all(categoryId)
+      : this.db.prepare('SELECT * FROM documents WHERE missing_since IS NULL ORDER BY rowid').all();
     return (rows as DocumentRow[]).map(rowToDocument);
+  }
+
+  getDocumentsIncludingMissing(): Document[] {
+    const rows = this.db.prepare('SELECT * FROM documents ORDER BY rowid').all();
+    return (rows as DocumentRow[]).map(rowToDocument);
+  }
+
+  markDocumentMissing(id: string, whenIso: string): void {
+    this.db.prepare('UPDATE documents SET missing_since = ? WHERE id = ?').run(whenIso, id);
+  }
+
+  clearDocumentMissing(id: string): void {
+    this.db.prepare('UPDATE documents SET missing_since = NULL WHERE id = ?').run(id);
   }
 
   getDocument(id: string): Document | undefined {
@@ -792,9 +887,9 @@ export class StoreService {
   }
 
   findDocumentByHash(hash: string): Document | undefined {
-    const row = this.db.prepare('SELECT * FROM documents WHERE content_hash = ? ORDER BY rowid LIMIT 1').get(hash) as
-      | DocumentRow
-      | undefined;
+    const row = this.db
+      .prepare('SELECT * FROM documents WHERE content_hash = ? AND missing_since IS NULL ORDER BY rowid LIMIT 1')
+      .get(hash) as DocumentRow | undefined;
     return row ? rowToDocument(row) : undefined;
   }
 
@@ -816,7 +911,7 @@ export class StoreService {
     if (!target) return undefined;
 
     const rows = this.db
-      .prepare(`SELECT * FROM documents WHERE ${column} IS NOT NULL`)
+      .prepare(`SELECT * FROM documents WHERE ${column} IS NOT NULL AND missing_since IS NULL`)
       .all() as DocumentRow[];
 
     let best: { doc: Document; distance: number } | undefined;
@@ -912,31 +1007,33 @@ export class StoreService {
   }
 
   removeDocument(id: string): boolean {
-    const run = this.db.transaction(() => {
-      // Drop any ledger line-item, portfolio-holding and job-application links
-      // so they dangle harmlessly rather than pointing at a deleted document.
-      this.db.prepare('UPDATE line_items SET document_id = NULL WHERE document_id = ?').run(id);
-      this.db.prepare('UPDATE holdings SET document_id = NULL WHERE document_id = ?').run(id);
-      this.db.prepare('UPDATE job_applications SET document_id = NULL WHERE document_id = ?').run(id);
-      this.deleteChunksUnsafe(id);
-      return this.db.prepare('DELETE FROM documents WHERE id = ?').run(id).changes > 0;
-    });
+    const run = this.db.transaction(() => this.removeDocumentUnsafe(id));
     return run();
   }
 
   removeDocumentAndQueueFileDeletion(id: string, storagePath: string): boolean {
     const run = this.db.transaction(() => {
-      // Drop any ledger line-item, portfolio-holding and job-application links
-      // so they dangle harmlessly rather than pointing at a deleted document.
-      this.db.prepare('UPDATE line_items SET document_id = NULL WHERE document_id = ?').run(id);
-      this.db.prepare('UPDATE holdings SET document_id = NULL WHERE document_id = ?').run(id);
-      this.db.prepare('UPDATE job_applications SET document_id = NULL WHERE document_id = ?').run(id);
-      this.deleteChunksUnsafe(id);
-      const deleted = this.db.prepare('DELETE FROM documents WHERE id = ?').run(id).changes > 0;
+      const deleted = this.removeDocumentUnsafe(id);
       if (deleted) this.queueDocumentFileDeletionUnsafe(storagePath);
       return deleted;
     });
     return run();
+  }
+
+  // Everything that must go with a document row, in one place so the two
+  // delete paths can't drift apart. Callers wrap this in a transaction —
+  // a partial failure must never leave half-cleaned references.
+  private removeDocumentUnsafe(id: string): boolean {
+    // Drop any ledger line-item, portfolio-holding and job-application links
+    // so they dangle harmlessly rather than pointing at a deleted document.
+    this.db.prepare('UPDATE line_items SET document_id = NULL WHERE document_id = ?').run(id);
+    this.db.prepare('UPDATE holdings SET document_id = NULL WHERE document_id = ?').run(id);
+    this.db.prepare('UPDATE job_applications SET document_id = NULL WHERE document_id = ?').run(id);
+    // Chat pins reference docs by id with no FK — delete the pin rows so
+    // conversations don't carry ghost pins for a document that's gone.
+    this.db.prepare('DELETE FROM conversation_pins WHERE doc_id = ?').run(id);
+    this.deleteChunksUnsafe(id);
+    return this.db.prepare('DELETE FROM documents WHERE id = ?').run(id).changes > 0;
   }
 
   queueDocumentFileDeletion(storagePath: string): void {
@@ -974,7 +1071,9 @@ export class StoreService {
   }
 
   getCategoryCounts(): Record<string, number> {
-    const rows = this.db.prepare('SELECT category, COUNT(*) AS n FROM documents GROUP BY category').all() as {
+    const rows = this.db
+      .prepare('SELECT category, COUNT(*) AS n FROM documents WHERE missing_since IS NULL GROUP BY category')
+      .all() as {
       category: string;
       n: number;
     }[];
@@ -1040,7 +1139,7 @@ export class StoreService {
       SELECT d.*, snippet(documents_fts, 6, ?, ?, '…', 24) AS snip
       FROM documents_fts
       JOIN documents d ON d.rowid = documents_fts.rowid
-      WHERE documents_fts MATCH ?${categoryId ? ' AND d.category = ?' : ''}
+      WHERE documents_fts MATCH ? AND d.missing_since IS NULL${categoryId ? ' AND d.category = ?' : ''}
       ORDER BY rank
     `;
     const params: unknown[] = [SNIP_OPEN, SNIP_CLOSE, match];
@@ -1091,7 +1190,8 @@ export class StoreService {
     const rows = this.db
       .prepare(`
         SELECT id FROM documents
-        WHERE id NOT IN (SELECT DISTINCT doc_id FROM doc_chunks)
+        WHERE missing_since IS NULL
+          AND id NOT IN (SELECT DISTINCT doc_id FROM doc_chunks)
         ORDER BY rowid
       `)
       .all() as { id: string }[];
@@ -1203,9 +1303,52 @@ export class StoreService {
       this.db.prepare('DELETE FROM messages WHERE conversation_id = ?').run(id);
       this.db.prepare('DELETE FROM conversation_pins WHERE conversation_id = ?').run(id);
       this.db.prepare('DELETE FROM chat_attachments WHERE conversation_id = ?').run(id);
+      this.db.prepare('DELETE FROM chat_pending_actions WHERE conversation_id = ?').run(id);
       return this.db.prepare('DELETE FROM conversations WHERE id = ?').run(id).changes > 0;
     });
     return run();
+  }
+
+  // ── Chat pending actions (confirm-before-apply write proposals) ──────────
+
+  addChatAction(action: {
+    id: string;
+    conversationId: string;
+    tool: string;
+    args: Record<string, unknown>;
+    summary: string;
+    createdAt: string;
+  }): void {
+    this.db
+      .prepare(
+        "INSERT INTO chat_pending_actions (id, conversation_id, tool, args, summary, status, created_at) VALUES (?, ?, ?, ?, ?, 'pending', ?)",
+      )
+      .run(action.id, action.conversationId, action.tool, JSON.stringify(action.args), action.summary, action.createdAt);
+  }
+
+  getChatAction(id: string): ChatPendingAction | undefined {
+    const row = this.db.prepare('SELECT * FROM chat_pending_actions WHERE id = ?').get(id) as
+      | ChatPendingActionRow
+      | undefined;
+    return row ? actionFromRow(row) : undefined;
+  }
+
+  getChatActions(conversationId: string): ChatPendingAction[] {
+    const rows = this.db
+      .prepare('SELECT * FROM chat_pending_actions WHERE conversation_id = ? ORDER BY rowid')
+      .all(conversationId) as ChatPendingActionRow[];
+    return rows.map(actionFromRow);
+  }
+
+  /** Resolve a pending action; false when it was already resolved (or gone). */
+  resolveChatAction(id: string, status: 'applied' | 'declined' | 'failed', resultSummary?: string): boolean {
+    return (
+      this.db
+        .prepare(
+          "UPDATE chat_pending_actions SET status = ?, result_summary = ?, resolved_at = ? WHERE id = ? AND status = 'pending'",
+        )
+        .run(status, resultSummary ?? null, new Date().toISOString(), id).changes > 0
+    );
   }
 
   // Conversation-scoped chat attachments (throwaway context, never filed).
@@ -1237,15 +1380,23 @@ export class StoreService {
     const rows = this.db
       .prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY rowid')
       .all(conversationId) as { id: string; conversation_id: string; role: string; content: string; meta: string | null; created_at: string }[];
+    // Persisted tool-call records snapshot a proposal's status at write time
+    // ('pending'); overlay the live status so applied/dismissed cards render
+    // correctly after a reload.
+    const actions = new Map(this.getChatActions(conversationId).map(a => [a.id, a]));
     return rows.map(r => {
       const meta = r.meta ? (JSON.parse(r.meta) as Pick<ChatMessage, 'citations' | 'toolCalls'>) : {};
+      const toolCalls = meta.toolCalls?.map(tc => {
+        const action = tc.actionId ? actions.get(tc.actionId) : undefined;
+        return action ? { ...tc, status: action.status, resultSummary: action.resultSummary } : tc;
+      });
       return {
         id: r.id,
         conversationId: r.conversation_id,
         role: r.role as ChatMessage['role'],
         content: r.content,
         citations: meta.citations,
-        toolCalls: meta.toolCalls,
+        toolCalls,
         createdAt: r.created_at,
       };
     });

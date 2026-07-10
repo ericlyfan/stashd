@@ -17,6 +17,11 @@ const QUERY_PREFIX = 'task: search result | query: ';
 const CHUNK_SIZE = 1400;
 const CHUNK_OVERLAP = 200;
 
+// Bounds each /api/embed call so a wedged local Ollama can't stall the chat's
+// RAG seed or wedge the indexing queue (it's a serialized promise chain — one
+// hung call blocks every document behind it). Generous for a cold model load.
+const EMBED_TIMEOUT_MS = 60_000;
+
 export interface RetrievedChunk {
   docId: string;
   docName: string;
@@ -130,6 +135,7 @@ export class EmbeddingService {
     const res = await fetch(`${EMBED_BASE}/api/embed`, {
       method: 'POST',
       headers,
+      signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
       body: JSON.stringify({ model: EMBED_MODEL, input: inputs }),
     });
     if (!res.ok) {

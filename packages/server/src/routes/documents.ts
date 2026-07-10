@@ -20,6 +20,7 @@ import { buildCustomCategory, slugifyCategory } from "../services/categoryStyle"
 import { extractText, hashBuffer } from "../services/textExtraction";
 import { perceptualHash, perceptualHashFile, simhash64 } from "../services/nearDuplicate";
 import { EmailAttachment, parseEmail } from "../services/emailParse";
+import { wrap } from "../middleware";
 
 const EMAIL_MIMES = ["message/rfc822", "application/vnd.ms-outlook"];
 
@@ -177,7 +178,7 @@ export function createDocumentRoutes(services: Services): Router {
         next();
       });
     },
-    async (req, res) => {
+    wrap(async (req, res) => {
       if (!req.file) return res.status(400).json({ error: "No file attached" });
 
       const jobId = uuidv4();
@@ -194,21 +195,21 @@ export function createDocumentRoutes(services: Services): Router {
         }),
       };
       res.json(response);
-    },
+    }),
   );
 
   // DELETE /api/documents/job/:jobId — discard an in-flight upload (temp file
   // + sidecar). Idempotent: discarding an unknown job is a 204 too.
-  router.delete("/job/:jobId", async (req, res) => {
+  router.delete("/job/:jobId", wrap(async (req, res) => {
     if (!JOB_ID_RE.test(req.params.jobId)) {
       return res.status(400).json({ error: "Invalid job id" });
     }
     await fileService.removeTempDir(req.params.jobId);
     res.status(204).end();
-  });
+  }));
 
   // GET /api/documents/process/:jobId — SSE
-  router.get("/process/:jobId", async (req, res) => {
+  router.get("/process/:jobId", wrap(async (req, res) => {
     const { jobId } = req.params;
     if (!JOB_ID_RE.test(jobId)) {
       return res.status(400).json({ error: "Invalid job id" });
@@ -270,10 +271,10 @@ export function createDocumentRoutes(services: Services): Router {
     }
 
     res.end();
-  });
+  }));
 
   // POST /api/documents/file/:jobId
-  router.post("/file/:jobId", async (req, res) => {
+  router.post("/file/:jobId", wrap(async (req, res) => {
     const { jobId } = req.params;
     if (!JOB_ID_RE.test(jobId)) {
       return res.status(400).json({ error: "Invalid job id" });
@@ -383,7 +384,7 @@ export function createDocumentRoutes(services: Services): Router {
     }
 
     res.json({ ...doc, attachmentsSpawned });
-  });
+  }));
 
   // GET /api/documents
   router.get("/", (req, res) => {
@@ -392,7 +393,7 @@ export function createDocumentRoutes(services: Services): Router {
   });
 
   // PATCH /api/documents — batch update
-  router.patch("/", async (req, res) => {
+  router.patch("/", wrap(async (req, res) => {
     const { ids, category, status, addTags, removeTags } = req.body as {
       ids?: unknown;
       category?: string;
@@ -437,12 +438,12 @@ export function createDocumentRoutes(services: Services): Router {
       updated++;
     }
     res.json({ updated });
-  });
+  }));
 
   // DELETE /api/documents — batch delete. Declared on "/" (not "/:id") so it
   // never shadows the single-document delete; mirrors the per-id cleanup
   // (file + row + vector index) for each id, skipping ones already gone.
-  router.delete("/", async (req, res) => {
+  router.delete("/", wrap(async (req, res) => {
     const { ids } = req.body as { ids?: unknown };
     if (!Array.isArray(ids) || ids.length === 0 || !ids.every((id) => typeof id === "string")) {
       return res.status(400).json({ error: "ids must be a non-empty array of document ids" });
@@ -455,7 +456,7 @@ export function createDocumentRoutes(services: Services): Router {
       deleted++;
     }
     res.json({ deleted });
-  });
+  }));
 
   // GET /api/documents/:id
   router.get("/:id", (req, res) => {
@@ -465,7 +466,7 @@ export function createDocumentRoutes(services: Services): Router {
   });
 
   // PATCH /api/documents/:id
-  router.patch("/:id", async (req, res) => {
+  router.patch("/:id", wrap(async (req, res) => {
     const { category, tags, notes, status } = (req.body ?? {}) as Record<string, unknown>;
     if (status !== undefined && status !== "pending" && status !== "filed") {
       return res.status(400).json({ error: "Invalid status" });
@@ -488,17 +489,17 @@ export function createDocumentRoutes(services: Services): Router {
     });
     if (!updated) return res.status(404).json({ error: "Document not found" });
     res.json(updated);
-  });
+  }));
 
   // DELETE /api/documents/:id
-  router.delete("/:id", async (req, res) => {
+  router.delete("/:id", wrap(async (req, res) => {
     const doc = store.getDocument(req.params.id);
     if (!doc) return res.status(404).json({ error: "Document not found" });
 
     await deleteDocumentRecordAndFile(doc);
 
     res.status(204).end();
-  });
+  }));
 
   // GET /api/documents/:id/file
   router.get("/:id/file", (req, res) => {

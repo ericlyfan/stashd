@@ -11,6 +11,7 @@ import {
 } from '@stashd/shared';
 import {
   ArrowUp,
+  Check,
   ChevronDown,
   Expand,
   FileText,
@@ -33,6 +34,7 @@ import {
   CategoryWithCount,
   ProjectSummary,
   removeChatAttachment,
+  resolveChatAction,
   sendChatMessage,
   setConversationPins,
 } from '../api';
@@ -190,16 +192,85 @@ function dayLabel(iso: string): string {
   return d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
 }
 
-// The model's actions, rendered as a faint work-log above the answer.
-function ToolTrace({ calls }: { calls: ToolCallRecord[] }) {
+// Which surface an applied write proposal refreshes: the global store
+// (documents + ledgers) or the applications page, which owns its own data and
+// listens for a window event instead. A new chat write tool must be added to
+// one of these (and to WRITE_TOOLS server-side in AgenticChatService.ts).
+const APP_WRITE_TOOLS = ['add_application', 'move_application', 'update_application'];
+
+const ACTION_LABELS: Record<string, string> = {
+  pending: 'Proposed change',
+  applied: 'Applied',
+  declined: 'Dismissed',
+  failed: 'Failed',
+};
+
+// A write-tool proposal (confirm-before-apply): nothing has changed yet —
+// the card is the approval surface, and it becomes the receipt once resolved.
+function ActionCard({
+  call,
+  busy,
+  onResolve,
+}: {
+  call: ToolCallRecord;
+  busy: boolean;
+  onResolve?: (approve: boolean) => void;
+}) {
+  const status = call.status ?? 'pending';
+  return (
+    <div className={`msg-action msg-action--${status}`}>
+      <div className="msg-action-head">
+        {status === 'applied' ? <Check size={12} /> : <Wrench size={12} />}
+        <span>{ACTION_LABELS[status] ?? status}</span>
+      </div>
+      <div className="msg-action-summary">{status === 'applied' && call.resultSummary ? call.resultSummary : call.summary}</div>
+      {status === 'failed' && call.resultSummary && <div className="msg-action-error">{call.resultSummary}</div>}
+      <details className="msg-action-args">
+        <summary>details</summary>
+        <pre>{JSON.stringify(call.args, null, 2)}</pre>
+      </details>
+      {status === 'pending' && onResolve && (
+        <div className="msg-action-btns">
+          <button className="btn btn-primary" disabled={busy} onClick={() => onResolve(true)}>
+            Apply
+          </button>
+          <button className="btn" disabled={busy} onClick={() => onResolve(false)}>
+            Dismiss
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// The model's actions, rendered as a faint work-log above the answer. Write
+// proposals (records carrying an actionId) render as approval cards instead.
+function ToolTrace({
+  calls,
+  busyActionId,
+  onResolveAction,
+}: {
+  calls: ToolCallRecord[];
+  busyActionId?: string | null;
+  onResolveAction?: (call: ToolCallRecord, approve: boolean) => void;
+}) {
   return (
     <div className="msg-trace">
-      {calls.map((c, i) => (
-        <div key={i} className="msg-trace-line" title={JSON.stringify(c.args)}>
-          <Wrench size={11} />
-          <span>{c.summary}</span>
-        </div>
-      ))}
+      {calls.map((c, i) =>
+        c.actionId ? (
+          <ActionCard
+            key={c.actionId}
+            call={c}
+            busy={busyActionId === c.actionId}
+            onResolve={onResolveAction ? approve => onResolveAction(c, approve) : undefined}
+          />
+        ) : (
+          <div key={i} className="msg-trace-line" title={JSON.stringify(c.args)}>
+            <Wrench size={11} />
+            <span>{c.summary}</span>
+          </div>
+        ),
+      )}
     </div>
   );
 }
@@ -540,6 +611,7 @@ export default function ChatSurface({
   const dropDepth = useRef(0);
   const [input, setInput] = useState('');
   const [stream, setStream] = useState<StreamState | null>(null);
+  const [busyActionId, setBusyActionId] = useState<string | null>(null);
   const busy = stream !== null;
   const threadRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -636,14 +708,9 @@ export default function ChatSurface({
     setMessages(prev => [...prev, optimistic]);
     setStream({ text: '', tools: [] });
 
-    // Tools that mutate the stash (documents or ledgers) — refresh the store
-    // afterwards so pages and sidebar counts reflect what the assistant did.
-    const WRITE_TOOLS = ['update_doc', 'add_line_item', 'create_project'];
-    // Job-application writes live outside the global store (the page owns its
-    // own data), so they're announced with a window event the page listens for.
-    const APP_WRITE_TOOLS = ['add_application', 'move_application', 'update_application'];
-    let touchedStore = false;
-    let touchedApplications = false;
+    // Write tools no longer mutate anything at call time — they queue
+    // approval cards (confirm-before-apply), so nothing needs refreshing
+    // here; resolveAction refreshes the right surface when a card is applied.
     try {
       await sendChatMessage(activeConvId, text, (event: ChatSSEEvent) => {
         if (event.type === 'token') {
@@ -651,8 +718,6 @@ export default function ChatSurface({
         } else if (event.type === 'tool') {
           // Any text streamed before a tool round was deliberation, not the
           // answer — drop it and show the action instead.
-          if (WRITE_TOOLS.includes(event.call.tool)) touchedStore = true;
-          if (APP_WRITE_TOOLS.includes(event.call.tool)) touchedApplications = true;
           setStream(s => s && { text: '', tools: [...s.tools, event.call] });
         } else if (event.type === 'done') {
           setMessages(prev => [...prev, event.message]);
@@ -665,8 +730,38 @@ export default function ChatSurface({
     } finally {
       setStream(null);
       refreshConversations();
-      if (touchedStore) refresh();
-      if (touchedApplications) window.dispatchEvent(new CustomEvent('stashd:applications-changed'));
+    }
+  }
+
+  // Apply or dismiss a write proposal. The server executes its stored args;
+  // on success the card flips to a receipt and the affected surface refreshes
+  // (global store for documents/ledgers, window event for applications).
+  async function resolveAction(call: ToolCallRecord, approve: boolean) {
+    if (!id || !call.actionId) return;
+    setBusyActionId(call.actionId);
+    try {
+      const outcome = await resolveChatAction(id, call.actionId, approve);
+      const patch = (tc: ToolCallRecord) =>
+        tc.actionId === outcome.actionId ? { ...tc, status: outcome.status, resultSummary: outcome.resultSummary } : tc;
+      setMessages(prev =>
+        prev.map(m =>
+          m.toolCalls?.some(tc => tc.actionId === outcome.actionId) ? { ...m, toolCalls: m.toolCalls!.map(patch) } : m,
+        ),
+      );
+      setStream(s => (s ? { ...s, tools: s.tools.map(patch) } : s));
+      if (outcome.status === 'applied') {
+        if (APP_WRITE_TOOLS.includes(call.tool)) {
+          window.dispatchEvent(new CustomEvent('stashd:applications-changed'));
+        } else {
+          refresh();
+        }
+      } else if (outcome.status === 'failed') {
+        notify(outcome.resultSummary ?? 'The change could not be applied', 'err');
+      }
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Could not resolve the change', 'err');
+    } finally {
+      setBusyActionId(null);
     }
   }
 
@@ -950,7 +1045,9 @@ export default function ChatSurface({
                       <span>{msg.role === 'assistant' ? 'Stash’d' : 'You'}</span>
                       <span className="msg-time">{clockTime(msg.createdAt)}</span>
                     </div>
-                    {msg.toolCalls && <ToolTrace calls={msg.toolCalls} />}
+                    {msg.toolCalls && (
+                      <ToolTrace calls={msg.toolCalls} busyActionId={busyActionId} onResolveAction={resolveAction} />
+                    )}
                     <div className="msg-body">
                       <MessageBody content={msg.content} cite={citeFor(msg)} />
                     </div>
@@ -966,7 +1063,9 @@ export default function ChatSurface({
                   <Sparkles size={11} />
                   <span>Stash’d</span>
                 </div>
-                {stream.tools.length > 0 && <ToolTrace calls={stream.tools} />}
+                {stream.tools.length > 0 && (
+                  <ToolTrace calls={stream.tools} busyActionId={busyActionId} onResolveAction={resolveAction} />
+                )}
                 {stream.text ? (
                   <div className="msg-body">
                     <MessageBody content={stream.text} cite={citeFor()} />

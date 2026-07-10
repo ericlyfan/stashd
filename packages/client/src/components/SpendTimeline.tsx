@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { Paperclip, Pin } from 'lucide-react';
 import { LineItem } from '@stashd/shared';
 import { CATEGORY_COLORS } from '../lib/categoryMeta';
-import { formatAmount, formatCell, formatDate } from '../lib/format';
+import { formatAmount, formatCell, formatDate, parseDay } from '../lib/format';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -58,7 +58,9 @@ function buildBuckets(
   const times: number[] = [];
   let undated = 0;
   for (const it of items) {
-    const d = it.datePaid ? new Date(it.datePaid) : null;
+    // parseDay, not new Date(): a bare YYYY-MM-DD parsed as UTC midnight puts
+    // items paid on the 1st into the previous month/quarter west of Greenwich.
+    const d = it.datePaid ? parseDay(it.datePaid) : null;
     if (!d || isNaN(d.getTime())) {
       undated += it.totalPaid ?? 0;
       continue;

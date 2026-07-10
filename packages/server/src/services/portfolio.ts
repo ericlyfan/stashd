@@ -36,6 +36,7 @@ export function buildSnapshot(
   base: string,
   fxRates: Map<string, number>,
   fxLive: boolean,
+  fxStale = false,
 ): PortfolioSnapshot {
   const enriched: HoldingWithQuote[] = holdings.map(h => {
     const quote = quotes.get(h.symbol.trim().toUpperCase());
@@ -69,6 +70,7 @@ export function buildSnapshot(
       currency,
       fxToBase,
       quoteCurrency: quote?.currency,
+      ...(pos.invalid && { positionInvalid: true }),
     };
     if (currentPrice === undefined) return enrichedHolding;
 
@@ -141,6 +143,7 @@ export function buildSnapshot(
     quotesLive,
     baseCurrency: base,
     fxLive,
+    fxStale,
   };
 }
 
@@ -148,6 +151,6 @@ export function buildSnapshot(
 export async function loadSnapshot(store: StoreService, base: string): Promise<PortfolioSnapshot> {
   const holdings = store.listHoldings();
   const quotes = await fetchQuotes(holdings.map(h => h.symbol));
-  const { rates, live: fxLive } = await fetchRates(base, portfolioCurrencies(holdings, quotes, base));
-  return buildSnapshot(holdings, store.listAllLots(), quotes, quotes.size > 0, base, rates, fxLive);
+  const fx = await fetchRates(base, portfolioCurrencies(holdings, quotes, base));
+  return buildSnapshot(holdings, store.listAllLots(), quotes, quotes.size > 0, base, fx.rates, fx.live, fx.stale);
 }

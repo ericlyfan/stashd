@@ -7,6 +7,7 @@ import {
   ApplicationStageInput,
   ApplicationsSnapshot,
   Category,
+  ChatActionResolution,
   ChatAttachment,
   ChatSSEEvent,
   Conversation,
@@ -270,6 +271,20 @@ export function addChatAttachment(conversationId: string, file: File): Promise<C
 
 export function removeChatAttachment(conversationId: string, attachmentId: string): Promise<void> {
   return req<void>(`/chat/${conversationId}/attachments/${attachmentId}`, { method: 'DELETE' });
+}
+
+// Resolve a queued write proposal (approval card). The server executes its
+// stored args on approve — the client sends only the verdict.
+export function resolveChatAction(
+  conversationId: string,
+  actionId: string,
+  approve: boolean,
+): Promise<ChatActionResolution> {
+  return req<ChatActionResolution>(`/chat/${conversationId}/actions/${actionId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ approve }),
+  });
 }
 
 /**

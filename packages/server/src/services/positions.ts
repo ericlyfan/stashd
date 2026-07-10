@@ -16,12 +16,21 @@ export interface Position {
   avgCost: number; // per-share average cost of the open position
   realizedGain: number; // gains locked in by past sells
   lotCount: number; // how many lots backed this (0 = legacy shares/buyPrice)
+  invalid: boolean; // true when a sell oversold the shares held (clamped, not thrown)
 }
 
 // Chronologically fold a holding's lots into its current position. Lots are
 // sorted by trade date (then insertion order) so sells resolve against the
-// average cost as it stood at that point. Oversells are invalid state and are
-// rejected instead of being folded into a misleading position.
+// average cost as it stood at that point.
+//
+// The write paths (lot create/update/delete) reject an oversell before it can
+// be stored, so a valid history never oversells here. But a database that
+// reached an inconsistent state some other way (a hand edit, an older bug)
+// must NOT make this throw — derivePosition is on every portfolio read
+// (GET /holdings, /holdings/health, the chat get_portfolio tool), and a throw
+// would hard-fail all of them permanently. So an oversell is CLAMPED (realize
+// only the shares actually held, flatten the position) and flagged via
+// `invalid`, rather than rejected.
 export function derivePosition(holding: Holding, lots: HoldingLot[]): Position {
   if (lots.length === 0) {
     const openShares = holding.shares;
@@ -32,6 +41,7 @@ export function derivePosition(holding: Holding, lots: HoldingLot[]): Position {
       avgCost: openShares > 0 ? costBasis / openShares : holding.buyPrice,
       realizedGain: 0,
       lotCount: 0,
+      invalid: false,
     };
   }
 
@@ -42,6 +52,7 @@ export function derivePosition(holding: Holding, lots: HoldingLot[]): Position {
   let shares = 0;
   let costBasis = 0;
   let realizedGain = 0;
+  let invalid = false;
 
   for (const lot of ordered) {
     const fee = lot.fee ?? 0;
@@ -50,12 +61,14 @@ export function derivePosition(holding: Holding, lots: HoldingLot[]): Position {
       costBasis += lot.shares * lot.price + fee;
     } else {
       const avgCost = shares > 0 ? costBasis / shares : 0;
-      if (lot.shares > shares + 1e-9) {
-        throw new Error(`Cannot sell ${lot.shares} shares on ${lot.date}; only ${+shares.toFixed(8)} shares are available`);
-      }
-      realizedGain += lot.shares * (lot.price - avgCost) - fee;
-      shares -= lot.shares;
-      costBasis -= lot.shares * avgCost;
+      // Oversell → clamp: realize only the shares actually held and flatten the
+      // position (never go negative). Flag it so callers can surface the bad
+      // history rather than trusting the numbers.
+      const sold = lot.shares > shares + 1e-9 ? shares : lot.shares;
+      if (lot.shares > shares + 1e-9) invalid = true;
+      realizedGain += sold * (lot.price - avgCost) - fee;
+      shares -= sold;
+      costBasis -= sold * avgCost;
       if (shares <= 1e-9) {
         shares = 0;
         costBasis = 0;
@@ -69,5 +82,6 @@ export function derivePosition(holding: Holding, lots: HoldingLot[]): Position {
     avgCost: shares > 0 ? costBasis / shares : 0,
     realizedGain,
     lotCount: lots.length,
+    invalid,
   };
 }

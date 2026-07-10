@@ -4,7 +4,8 @@
 // QuoteService's provider-chain / cache / never-throw conventions.
 //
 // Primary: Frankfurter (ECB daily rates, no key). Fallback: open.er-api.com.
-// Then a stale cache; then identity (1.0, `live:false`) so totals still compute.
+// Then a stale cache (`live:false, stale:true` — converted, but disclosed);
+// then identity (1.0, `live:false, stale:false`) so totals still compute.
 
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36';
 
@@ -20,7 +21,12 @@ export interface FxResult {
   // rates.get(ccy) converts 1 unit of `ccy` into the base currency; the base
   // itself maps to 1. Unknown currencies fall back to 1 at the call site.
   rates: Map<string, number>;
+  // live: rates fetched fresh (or fresh-cached) this hour. stale: every
+  // source is down and these are the last good rates (≤24h old) — conversions
+  // still apply, but the UI should disclose their age. Neither: identity
+  // rates, nothing is converted. live and stale are mutually exclusive.
   live: boolean;
+  stale: boolean;
 }
 
 interface FrankfurterResponse {
@@ -87,24 +93,26 @@ export async function fetchRates(base: string, currencies: string[]): Promise<Fx
   const fresh = hit && now - hit.at < CACHE_TTL_MS;
   const covered = (table: Map<string, number>) => wanted.every(c => table.has(c));
   if (fresh && covered(hit!.rates)) {
-    return { rates: withBase(hit!.rates, baseCcy), live: true };
+    return { rates: withBase(hit!.rates, baseCcy), live: true, stale: false };
   }
 
   const fetched = (await fetchFrankfurter(baseCcy, wanted)) ?? (await fetchErApi(baseCcy, wanted));
   if (fetched && covered(fetched)) {
     cache.set(baseCcy, { rates: fetched, at: now });
-    return { rates: withBase(fetched, baseCcy), live: true };
+    return { rates: withBase(fetched, baseCcy), live: true, stale: false };
   }
 
-  // Every source failed (or was incomplete). Serve the last good table if recent.
+  // Every source failed (or was incomplete). Serve the last good table if
+  // recent — but flagged, never as live: conversions still apply, and the
+  // UI's staleness advisory must fire during the outage.
   if (hit && now - hit.at < MAX_STALE_MS && covered(hit.rates)) {
-    return { rates: withBase(hit.rates, baseCcy), live: true };
+    return { rates: withBase(hit.rates, baseCcy), live: false, stale: true };
   }
 
   // Nothing usable — identity rates so totals still add up (flagged not live).
   const identity = withBase(new Map<string, number>(), baseCcy);
   for (const c of wanted) identity.set(c, 1);
-  return { rates: identity, live: wanted.length === 0 };
+  return { rates: identity, live: wanted.length === 0, stale: false };
 }
 
 function withBase(rates: Map<string, number>, base: string): Map<string, number> {

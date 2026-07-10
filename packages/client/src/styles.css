@@ -3432,6 +3432,109 @@ body.dragging-dock {
   flex-shrink: 0;
 }
 
+/* Write proposals (confirm-before-apply) — approval cards in the work log */
+
+.msg-action {
+  margin: 2px 0 2px 16px;
+  padding: 9px 12px 10px;
+  max-width: 460px;
+  border: 1px dashed var(--gold);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+}
+
+.msg-action-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--gold);
+  margin-bottom: 5px;
+}
+
+.msg-action-summary {
+  font-size: 13px;
+  color: var(--ink);
+  line-height: 1.45;
+}
+
+.msg-action-error {
+  margin-top: 5px;
+  font-size: 12px;
+  color: var(--wax-deep);
+}
+
+.msg-action-args {
+  margin-top: 6px;
+}
+
+.msg-action-args summary {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-3);
+  cursor: pointer;
+  user-select: none;
+}
+
+.msg-action-args pre {
+  margin: 5px 0 0;
+  padding: 7px 9px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-2);
+  background: var(--paper-deep);
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+}
+
+.msg-action-btns {
+  display: flex;
+  gap: 7px;
+  margin-top: 9px;
+}
+
+.msg-action-btns .btn {
+  padding: 4px 14px;
+  font-size: 12px;
+}
+
+.msg-action--applied {
+  border-style: solid;
+  border-color: var(--moss);
+  background: var(--moss-soft);
+}
+
+.msg-action--applied .msg-action-head {
+  color: var(--moss);
+}
+
+.msg-action--declined {
+  border-color: var(--line);
+  opacity: 0.65;
+}
+
+.msg-action--declined .msg-action-head {
+  color: var(--ink-3);
+}
+
+.msg-action--declined .msg-action-summary {
+  color: var(--ink-3);
+  text-decoration: line-through;
+}
+
+.msg-action--failed {
+  border-style: solid;
+  border-color: var(--wax);
+  background: var(--wax-soft);
+}
+
+.msg-action--failed .msg-action-head {
+  color: var(--wax);
+}
+
 /* Streaming */
 
 .msg-thinking {

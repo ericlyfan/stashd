@@ -6,6 +6,11 @@ const OLLAMA_BASE = process.env.OLLAMA_URL ?? 'http://localhost:11434';
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL ?? 'gemma4';
 const OLLAMA_API_KEY = process.env.OLLAMA_API_KEY;
 
+// Bounds the whole classify call so a wedged Ollama fails the upload job with
+// a real error instead of hanging its SSE stream forever. Generous: image
+// classification on a multimodal model is legitimately slow.
+const CLASSIFY_TIMEOUT_MS = 120_000;
+
 function buildSystemPrompt(categories: Category[]): string {
   const list = categories.map(c => `- "${c.id}" (${c.name})`).join('\n');
   return `You are a document classification assistant. Analyze the provided document and return ONLY a JSON object with these exact fields:
@@ -52,6 +57,7 @@ export class OllamaProvider implements ModelProvider {
     const res = await fetch(`${OLLAMA_BASE}/api/generate`, {
       method: 'POST',
       headers,
+      signal: AbortSignal.timeout(CLASSIFY_TIMEOUT_MS),
       body: JSON.stringify(body),
     });
 

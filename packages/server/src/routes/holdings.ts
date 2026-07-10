@@ -5,6 +5,7 @@ import { StoreService } from '../services/StoreService';
 import { fetchHistory, fetchQuotes } from '../services/QuoteService';
 import { loadSnapshot } from '../services/portfolio';
 import { buildHealthReport } from '../services/RiskService';
+import { wrap } from '../middleware';
 
 interface Services {
   store: StoreService;
@@ -126,6 +127,28 @@ function lotWith(input: HoldingLotInput, existing?: HoldingLot, holdingId?: stri
   };
 }
 
+// Validate the position implied by an explicit set of lots (no candidate to
+// splice in) — used on delete, where the lot is being removed rather than
+// added/changed. Returns an error string if any sell in the resulting history
+// oversells the shares held at that point.
+function validateLotSet(lots: HoldingLot[]): string | undefined {
+  const ordered = [...lots].sort((a, b) =>
+    a.date === b.date ? a.createdAt.localeCompare(b.createdAt) : a.date.localeCompare(b.date),
+  );
+  let shares = 0;
+  for (const lot of ordered) {
+    if (lot.type === 'buy') {
+      shares += lot.shares;
+    } else if (lot.shares > shares + 1e-9) {
+      return `Removing this transaction would leave a sell of ${lot.shares} shares on ${lot.date} with only ${+shares.toFixed(8)} shares held`;
+    } else {
+      shares -= lot.shares;
+      if (shares <= 1e-9) shares = 0;
+    }
+  }
+  return undefined;
+}
+
 function validateLotPosition(lots: HoldingLot[], candidate: HoldingLot): string | undefined {
   const next = candidate.id === '__new__'
     ? [...lots, candidate]
@@ -153,25 +176,25 @@ export function createHoldingRoutes(services: Services): Router {
 
   // GET /api/holdings?base=CAD — the whole portfolio with live prices, rollups
   // in the base currency, and per-holding native currency.
-  router.get('/', async (req, res) => {
+  router.get('/', wrap(async (req, res) => {
     res.json(await loadSnapshot(store, readBase(req.query.base)));
-  });
+  }));
 
   // GET /api/holdings/health?base=CAD — the risk & health report: per-holding +
   // portfolio risk stats (vs SPY), correlation/concentration warnings, and
   // heuristic rebalancing suggestions. Declared before "/:id" routes.
-  router.get('/health', async (req, res) => {
+  router.get('/health', wrap(async (req, res) => {
     const base = readBase(req.query.base);
     const snapshot = await loadSnapshot(store, base);
     res.json(await buildHealthReport(snapshot));
-  });
+  }));
 
   // GET /api/holdings/history/:symbol — one stock's daily closes + live quote,
   // for the stock detail page. Declared before "/:id" routes so "history" isn't
   // parsed as a holding id. Single-currency (the stock's native currency).
   // ?days=N trims the series to the last N calendar days (sparklines don't need
   // two decades of closes per symbol).
-  router.get('/history/:symbol', async (req, res) => {
+  router.get('/history/:symbol', wrap(async (req, res) => {
     const symbol = req.params.symbol.trim().toUpperCase();
     if (!symbol) return res.status(400).json({ error: 'A symbol is required' });
     const days = Number(req.query.days);
@@ -209,7 +232,7 @@ export function createHoldingRoutes(services: Services): Router {
       points,
     };
     res.json(result);
-  });
+  }));
 
   // GET /api/holdings/:id/lots — a holding's transactions
   router.get('/:id/lots', (req, res) => {
@@ -258,6 +281,12 @@ export function createHoldingRoutes(services: Services): Router {
   router.delete('/:id/lots/:lotId', (req, res) => {
     const lot = store.getLot(req.params.lotId);
     if (!lot || lot.holdingId !== req.params.id) return res.status(404).json({ error: 'Transaction not found' });
+    // Deleting a buy can leave a later sell overselling the remaining shares —
+    // an invalid history that would otherwise hard-fail every snapshot read.
+    // Reject it the way create/update reject an oversell.
+    const remaining = store.listLots(lot.holdingId).filter(l => l.id !== lot.id);
+    const positionError = validateLotSet(remaining);
+    if (positionError) return res.status(400).json({ error: positionError });
     store.removeLot(lot.id);
     res.status(204).end();
   });

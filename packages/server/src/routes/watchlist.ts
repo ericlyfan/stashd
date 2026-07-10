@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { Quote, WatchlistItem, WatchlistItemWithQuote } from '@stashd/shared';
 import { StoreService } from '../services/StoreService';
 import { fetchQuotes } from '../services/QuoteService';
+import { wrap } from '../middleware';
 
 interface Services {
   store: StoreService;
@@ -37,11 +38,11 @@ export function createWatchlistRoutes(services: Services): Router {
   const router = Router();
 
   // GET /api/watchlist — watched symbols enriched with live quotes
-  router.get('/', async (_req, res) => {
+  router.get('/', wrap(async (_req, res) => {
     const items = store.listWatchlist();
     const quotes = await fetchQuotes(items.map(i => i.symbol));
     res.json(enrich(items, quotes));
-  });
+  }));
 
   // POST /api/watchlist — add a symbol (idempotent: returns the existing item)
   router.post('/', (req, res) => {

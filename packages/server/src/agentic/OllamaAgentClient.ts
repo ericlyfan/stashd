@@ -11,6 +11,12 @@ const OLLAMA_BASE = process.env.AGENT_OLLAMA_URL ?? process.env.OLLAMA_URL ?? 'h
 const OLLAMA_MODEL = process.env.AGENT_OLLAMA_MODEL ?? 'glm-4.7:cloud';
 const OLLAMA_API_KEY = process.env.AGENT_OLLAMA_API_KEY ?? process.env.OLLAMA_API_KEY;
 
+// Bounds the whole call — connection AND body/stream read — so a wedged
+// Ollama can't hang an SSE chat stream forever. Generous: one agent round
+// (long context, tool schemas, full streamed answer) can legitimately take
+// a minute-plus on the cloud model.
+const CHAT_TIMEOUT_MS = 120_000;
+
 interface OllamaToolCall {
   id?: string;
   function?: {
@@ -74,6 +80,7 @@ export class OllamaAgentClient implements AgentModelClient {
     const res = await fetch(`${this.baseUrl}/api/chat`, {
       method: 'POST',
       headers,
+      signal: AbortSignal.timeout(CHAT_TIMEOUT_MS),
       body: JSON.stringify({
         model: this.model,
         messages: toOllamaMessages(request.messages),

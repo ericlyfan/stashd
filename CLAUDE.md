@@ -6,7 +6,58 @@ It is the single living document for **Stashd** — both the _operating manual_ 
 verify, and not break things) and the _architecture & feature reference_ (how it all works). Keep this
 file honest and current; it is the project's memory and the first thing agents load.
 
-_Last updated: 2026-07-08 (**unified hybrid chat** — the per-conversation Classic/Agentic mode is
+_Last updated: 2026-07-09 (**server reliability** — (1) async route handlers are now wrapped in
+`wrap()` (`server/src/middleware.ts`) with one terminal `errorHandler` registered last in `app.ts`:
+Express 4 lets a rejected async handler escape and crash the process, so `wrap` funnels rejections to
+a JSON 500 (delegating to Express's default once SSE headers are flushed). New async handlers MUST be
+wrapped — see the new invariant. (2) `derivePosition` no longer throws on an oversell (it clamps +
+flags `invalid` → `HoldingWithQuote.positionInvalid`), and lot **delete** now validates the remaining
+position (`validateLotSet`) like create/update — deleting a buy that backed a sell used to leave an
+inconsistent history that threw on every `GET /holdings` // `/holdings/health` // chat `get_portfolio`
+read (§3d). Same day, later: **`truncateText` preserves newlines** (`textExtraction.ts`) — it used to
+collapse ALL whitespace to single spaces, which broke the email viewer (it splits stored
+`extractedText` on `\n` to rebuild headers/body) and made `chunkText`'s paragraph/newline break
+preferences dead code. It now collapses only horizontal whitespace (`[^\S\n]+`), strips spaces
+hugging line breaks, and caps blank runs at one blank line. `backfillDerivedFields` gained a
+self-healing repair: stored `extractedText` with zero newlines is re-extracted on boot (images are
+naturally skipped — `extractText` returns undefined for them, so classify-time transcriptions are
+never touched; a genuinely one-line doc re-extracts to the same string and is left alone), its
+`simHash` recomputed, and its `doc_chunks` dropped so `EmbeddingService.init()` re-embeds it in the
+same boot sequence. Same day, later: **chat write tools are confirm-before-apply** — the agent's six
+write tools (update_doc, create_project, add_line_item, add/move/update_application) no longer
+execute directly; each call queues a `chat_pending_actions` row and renders as an **approval card**
+in the thread (Apply / Dismiss), and only `POST /chat/:id/actions/:actionId` executes the
+**server-stored** args (§3b, and see the new invariant) — closing the prompt-injection hole where a
+hostile document could drive stash/ledger writes with no user confirmation. Same day, later: **boot
+reconciliation no longer hard-deletes** — a document row whose file is missing is **quarantined**
+(`missing_since` column, guarded migration: hidden from lists/search/counts/dup-checks/new-indexing,
+but metadata/text/links kept; `getDocument(id)` still returns it) and **auto-revived when the file
+reappears**, so a moved or partially-restored data dir is fully recoverable instead of a silent
+purge; the **orphan-file sweep** (the truly destructive half) refuses to run when it would delete
+more than max(10, 10% of on-disk files) or when the DB has zero document rows (an empty/replaced DB
+would orphan the entire stash), requiring `STASHD_FORCE_RECONCILE=1` to proceed. Quarantined rows
+keep their paths referenced, killing the old amplifier where restoring files after a row purge fed
+them straight to the sweep. Same day, later: **date-only strings parse via `parseDay`**
+(`client/src/lib/format.ts`) — `new Date('YYYY-MM-DD')` is UTC midnight, i.e. the *previous* day
+locally west of Greenwich, which shifted every displayed date-only field (`datePaid`,
+`appliedDate`, `dateExtracted`) back one day and dropped 1st-of-month ledger items into the prior
+month's SpendTimeline bucket; `parseDay` reads bare dates as local noon (timestamps pass through)
+and now backs `formatDate`/`relTime` and the timeline bucketing. Use it for any new date-only
+parsing — same bug class as the applications.ts noon-anchoring fix of 2026-07-07. Same day, later:
+**document deletion cleans chat pins** — both delete paths now share one transactional
+`removeDocumentUnsafe` (link-nulling + chunk delete + `DELETE FROM conversation_pins WHERE doc_id`;
+previously pin rows leaked forever), and `load()` runs an idempotent ghost-pin sweep for rows left
+by the old behavior. Anything new that must die with a document belongs in `removeDocumentUnsafe`,
+not in the two public wrappers. Same day, later: (1) **FX staleness is disclosed** — the stale-cache
+path in `FxService.fetchRates` used to report `live:true`, so the UI advisory never fired during an
+outage; `FxResult`/`PortfolioSnapshot` now carry `stale`/`fxStale` (stale ≤24h cache = converted but
+disclosed; identity = unconverted; two distinct portfolio banners). (2) **All three model clients
+have call timeouts** (`AbortSignal.timeout`, the MarketService pattern): agent chat 120s
+(`OllamaAgentClient`, bounds the NDJSON stream read too), classification 120s (`OllamaProvider`),
+embeddings 60s (`EmbeddingService.embedRaw` — a hung call would wedge the serialized indexing queue
+behind it). Previously a wedged Ollama hung SSE streams/classify jobs forever. New model/provider
+fetches MUST carry a timeout signal.)
+Prior 2026-07-08 (**unified hybrid chat** — the per-conversation Classic/Agentic mode is
 gone: **all chat runs through `AgenticChatService` / `AgenticWorkflow`** (§3b), now seeded with a
 **RAG retrieval seed** (top-4 sqlite-vec chunks via the same `EmbeddingService.retrieve` classic
 used, injected into the roster message as `[doc:id]` excerpts; empty seed when embeddings are down —
@@ -15,7 +66,15 @@ never throws); the system prompt treats seed excerpts as unconfirmed starting po
 `mode`, `PATCH /chat/:id` removed, `ChatMode`/`Conversation.mode` dropped from shared types; legacy
 DBs keep a vestigial ignored `mode` column (deliberate no-migration tradeoff). Client: mode toggle /
 mode cards / `stashd.chatMode` localStorage / Agentic history badge all removed. `OLLAMA_MODEL` is
-now classification-only; chat uses `AGENT_OLLAMA_MODEL`.)
+now classification-only; chat uses `AGENT_OLLAMA_MODEL`. Same day, later: **chat-attachment upload
+hardened** — the handler now writes `basename(originalname)` (the raw multipart filename allowed
+`../` path traversal) and mirrors the documents-route multer config (`defParamCharset: 'utf8'` for
+CJK names; fileFilter rejects through the callback + an error-translating wrapper, so unsupported
+types get a real 400 and oversize files a 413 instead of a misleading generic error). See the new
+"Uploads sanitize client filenames" invariant. Same day: **network surface locked down** — the
+server now binds `127.0.0.1` only (was 0.0.0.0) and the open `cors()` middleware was removed (the
+client is same-origin via Vite's `/api` proxy); the `cors`/`@types/cors` deps are gone. See the
+"Loopback-only, no CORS" invariant.)
 Prior 2026-07-07 (**job applications tracker** — new sidebar section `/applications` (§3e):
 `job_applications` + `application_stages` (customizable pipeline, 5 seeded, `kind` + `is_terminal`
 drive the KPI math) + `application_events` (timestamped status history — stage changes happen only
@@ -188,6 +247,11 @@ Embeddings run on a **separate, local** Ollama (the cloud endpoint serves no emb
 - `OLLAMA_EMBED_MODEL` (default `embeddinggemma`, 768 dims — `ollama pull embeddinggemma` once)
 - `OLLAMA_EMBED_API_KEY` (optional)
 
+Safety valve (not in `.env` normally):
+
+- `STASHD_FORCE_RECONCILE=1` — lets boot's orphan-file sweep proceed when it would mass-delete
+  (see "Boot reconciliation quarantines" in Gotchas). Set it for one deliberate boot, then unset.
+
 ## Conventions & invariants
 
 - **File-type support is data, not code.** Adding/removing a supported type means editing
@@ -205,8 +269,38 @@ Embeddings run on a **separate, local** Ollama (the cloud endpoint serves no emb
   classifier snaps look-alike proposed slugs onto existing ones (`slugsLookAlike`). Preserve this bias.
 - **Background work uses `void`** (embedding, attachment fan-out, backfills) so user-facing requests
   return immediately. Keep blocking work off the file/upload path.
+- **Async route handlers MUST be wrapped in `wrap()`** (`server/src/middleware.ts`). Express 4 does
+  not catch a rejected async handler — the rejection escapes to the process and (this Node version)
+  crashes it. `wrap(async (req, res) => …)` funnels rejections into `next(err)`; the terminal
+  `errorHandler` (registered last in `app.ts`, after every route) emits a JSON 500, or delegates to
+  Express's default when headers are already sent (an SSE stream mid-flight). Every `async` handler
+  is wrapped today; a new one that isn't is a latent crash. Sync handlers don't need it.
+- **Uploads sanitize client filenames and share one multer shape.** The multipart `originalname` is
+  attacker-controlled and can carry `../` — every upload endpoint (documents upload, chat
+  attachments) must write `basename(originalname)`, never the raw name (a traversal here was fixed
+  2026-07-08). New upload endpoints mirror the documents-route multer config: `defParamCharset:
+  'utf8'` (CJK names), a fileFilter that rejects via `cb(new Error(…))` — not a silent `cb(null,
+  false)`, which surfaces as a bogus "file is required" — and the wrapper middleware that translates
+  multer errors into 413/400 JSON (without it, filter errors become HTML 500s).
 - **Schema migrations** are boot-time, `table_info`-guarded `ALTER TABLE ADD COLUMN` — idempotent and
   safe to re-run. Follow that pattern for new columns.
+- **Chat write tools are gated — confirm-before-apply, enforced server-side.** The agent reads
+  document text (RAG seed, pins, attachments, `read_doc`), which is untrusted input, so no model tool
+  call may mutate the store directly. `AgenticChatService.gateWriteTools` wraps every tool named in
+  its `WRITE_TOOLS` set: the wrapped `execute` persists a `chat_pending_actions` row (tool + args +
+  preview summary) and tells the model "queued"; the mutation happens only in `resolveAction`
+  (`POST /chat/:id/actions/:actionId`), which re-runs the ungated tool with the **server-stored**
+  args — the client sends only the action id, so a UI-skipping client has nothing to forge. **A new
+  chat write tool must be added to `WRITE_TOOLS` (AgenticChatService.ts) and to the client's
+  `APP_WRITE_TOOLS` list (ChatSurface.tsx) if it belongs to the applications page — otherwise it
+  ships ungated.** Tool bodies must stay synchronous store calls (no real I/O between the pending
+  check and the resolve) or the double-submit guard weakens.
+- **Loopback-only, no CORS.** The server is a single-user local-first app: it binds `127.0.0.1`
+  (`app.listen(PORT, '127.0.0.1', …)` in `index.ts`, never the default 0.0.0.0) and mounts **no**
+  `cors()` middleware (the `cors` dep was removed 2026-07-08). The client reaches the API same-origin
+  through Vite's `/api` → :3001 proxy, so absent CORS headers are a feature — with no auth on any
+  route, they're what stop arbitrary web pages from reading the stash. Don't add open `cors()` back;
+  if a second origin ever truly needs the API, scope it to that exact origin.
 
 ## Gotchas & known limitations
 
@@ -250,6 +344,13 @@ Embeddings run on a **separate, local** Ollama (the cloud endpoint serves no emb
   to TMX on Nasdaq's explicit `NOT_US`, and `fetchHistory` picks the provider from the resolved quote
   currency (never a guess). A throttled US quote → **unpriced**, not mispriced. `GET
   /holdings/history/:symbol` ends the series on today's live price (Cboe's last close lags a day or two).
+- **Boot reconciliation quarantines, never purges.** A document row whose file is missing on disk is
+  marked `missing_since` (hidden from every list/search/count surface, links and text kept) and
+  revives automatically once the file is back — nothing to do beyond restoring files at their old
+  paths and restarting. The orphan-file **sweep** (files with no row) is the destructive direction:
+  it refuses a mass deletion (> max(10, 10% of files), or any orphans against a zero-row DB) and
+  logs how to override (`STASHD_FORCE_RECONCILE=1`). Don't "fix" a refused sweep by forcing it
+  until you know why the DB and disk disagree.
 - **Abandoned uploads leak temp dirs.** UI-discarded/skipped uploads clean up via
   `DELETE /documents/job/:jobId`, but uploads abandoned by closing the tab leave `data/temp/<jobId>/`
   (and possibly an `.extracted.txt` sidecar) indefinitely — there's no sweep job.
@@ -374,8 +475,10 @@ in the Inbox and the sidebar badge.
 - **Startup backfill** (`textExtraction.ts`, `backfillDerivedFields`): on boot the server re-parses any
   PDF lacking `extractedText`, hashes any file lacking `contentHash`, and computes the near-dup
   signatures (`simHash` from text, `perceptualHash` by decoding images off disk) for any doc missing
-  them, so pre-feature documents become searchable and (exact + fuzzy) duplicate-checkable. Image text
-  can't be backfilled (it comes from the model at classify time only).
+  them, so pre-feature documents become searchable and (exact + fuzzy) duplicate-checkable. It also
+  **re-extracts any stored text with zero newlines** (flattened by the pre-2026-07-09 `truncateText`),
+  recomputing `simHash` and dropping the doc's `doc_chunks` so the embedding init that follows
+  re-embeds it. Image text can't be backfilled (it comes from the model at classify time only).
 - Client: sidebar search box (the `/` key focuses it from anywhere) live-navigates to `/search?q=…`
   with a 180 ms debounce.
 
@@ -411,19 +514,30 @@ messages. `AgenticWorkflow` (model-agnostic, `OllamaAgentClient` → `AGENT_OLLA
 `glm-4.7:cloud`) then runs the **tool loop**: hard cap of 6 tool iterations with a final
 tools-disabled fallback call at the step limit, tool errors returned as tool messages, compact JSON
 results (14k truncation backstop), per-step trace events. Tools: `search_docs` (FTS, limit ≤8),
-`read_doc` (8k text cap), `list_categories`, `update_doc` (re-categorize/tag/flag — explicit user
-request only), ledger tools `list_projects` / `read_project` (read, with optional line-item query
-filtering) and `create_project` / `add_line_item` (**write** — same gating; `totalPaid` defaults to
-`amountPaid + taxAmount`), **`get_portfolio`** (live-priced snapshot via `services/portfolio.ts`),
-**`get_applications`** plus the gated application writes `add_application` / `move_application` /
-`update_application` (shared helpers + loose resolution in `services/applications.ts`; ambiguity
-refuses rather than guesses). Answers cite inline as `[doc:<id>]`; the service parses these into
+`read_doc` (8k text cap), `list_categories`, `update_doc` (re-categorize/tag/flag), ledger tools
+`list_projects` / `read_project` (read, with optional line-item query filtering) and
+`create_project` / `add_line_item` (`totalPaid` defaults to `amountPaid + taxAmount`),
+**`get_portfolio`** (live-priced snapshot via `services/portfolio.ts`), **`get_applications`** plus
+the application writes `add_application` / `move_application` / `update_application` (shared
+helpers + loose resolution in `services/applications.ts`; ambiguity refuses rather than guesses).
+**All six write tools are confirm-before-apply** (2026-07-09): the gated `execute` queues a
+`chat_pending_actions` row + preview summary instead of mutating (the model is told "queued" and
+instructed never to claim the change happened); the `tool` SSE event / persisted `ToolCallRecord`
+carry `actionId` + `status: pending`, rendered client-side as an **approval card** (Apply /
+Dismiss, expandable args, receipt or error state once resolved — statuses are overlaid fresh in
+`getMessages` so reloads show current state). `POST /chat/:id/actions/:actionId { approve }`
+executes the server-stored args through the same ungated tool (409 once resolved); a system context
+message lists earlier proposals' statuses each turn so the agent knows what was applied/dismissed.
+Applied cards trigger the store `refresh()` (docs/ledgers) or `stashd:applications-changed`
+(applications) — **at apply time, no longer at tool-call time**. Answers cite inline as `[doc:<id>]`; the service parses these into
 `citations` (id + name, resolved by unique prefix, surviving doc deletion) and persists tool calls
 as human-readable records. History sent to the model is capped at the last 12 messages.
 
 **Attach a file to just the chat** (chat-only context): dropping a file **onto the chat** (dock or full
 page) attaches it as throwaway context rather than filing it. `POST /chat/:id/attachments` (multer,
-extension-validated) runs the `textExtraction.ts` `extractText` dispatcher, caps the text at 20k, and
+extension-validated, same config + filename sanitization as the documents upload — see the
+"Uploads sanitize client filenames" invariant) runs the `textExtraction.ts` `extractText` dispatcher,
+stores/serves the `basename`d filename, caps the text at 20k, and
 stores a row in `chat_attachments` (conversation-scoped, deleted with the conversation, **never** in the
 stash / FTS / vec index). `getConversation` returns `attachments`, and `AgenticChatService` injects
 each attachment's text into the context like a pinned doc (but with no `[doc:]` id to cite). **Text-bearing types only** — images carry no extractable text and are
@@ -553,9 +667,16 @@ fallback. Money rollups are computed per request in the route's `buildSnapshot`,
 of truth** for its position; with none, the stored `shares`/`buyPrice` act as a single undated opening
 lot (so pre-lot holdings keep working). `services/positions.ts` `derivePosition` folds the lots by
 **average cost** (a buy adds shares + cost incl. fee; a sell realizes `qty × (price − running avg cost)`
-and reduces the open basis) → `{ openShares, costBasis, avgCost, realizedGain, lotCount }`. `buildSnapshot`
-**overrides** the enriched holding's `shares`/`buyPrice`(=avg cost)/`costBasis` with the derived values,
-so the client reads the same fields either way. Lots cascade-delete with the holding.
+and reduces the open basis) → `{ openShares, costBasis, avgCost, realizedGain, lotCount, invalid }`.
+`buildSnapshot` **overrides** the enriched holding's `shares`/`buyPrice`(=avg cost)/`costBasis` with
+the derived values, so the client reads the same fields either way. Lots cascade-delete with the holding.
+The lot write paths (create/update **and delete** — `validateLotPosition`/`validateLotSet` in
+`routes/holdings.ts`) reject an oversell before it can be stored, so a valid history never oversells.
+But `derivePosition` runs on **every** portfolio read (`GET /holdings`, `/holdings/health`, the chat
+`get_portfolio` tool), so it must **never throw** on a bad state that slipped in some other way — an
+oversell is **clamped** (realize only the shares held, flatten to non-negative) and flagged
+`invalid`, surfaced as `HoldingWithQuote.positionInvalid` rather than crashing every read. (It threw
+before 2026-07-09; deleting a buy that backed a sell then permanently 500'd all three readers.)
 
 **Live prices** (`QuoteService.ts`): `fetchQuotes` resolves each symbol through a **provider chain**, no
 API key: **(1) Yahoo** chart endpoint (`/v8/finance/chart/<SYMBOL>`, `meta.regularMarketPrice` +
@@ -594,10 +715,13 @@ manual `currency` field → else the base. All per-holding money (price, cost ba
 day change) stays **native**. The portfolio **totals + weights + chart** are in a **base currency**
 (request `?base=CAD`, default `USD`; the client persists a base selector in `localStorage`
 `stashd.portfolioBase`, default `CAD`). `buildSnapshot` sets each holding's `fxToBase` from
-`FxService.fetchRates(base, currencies)` (Frankfurter → er-api → stale → identity 1.0 with `fxLive:false`)
+`FxService.fetchRates(base, currencies)` (Frankfurter → er-api → stale cache ≤24h with
+`fxLive:false, fxStale:true` — conversions still apply, disclosed by a distinct banner → identity
+1.0 with `fxLive:false, fxStale:false`)
 and sums `native × fxToBase` into base-currency totals; `weight = marketValueBase ÷ total base market
-value` (currency-invariant). If FX is unavailable, `fxLive` is false, amounts are summed unconverted, and
-the UI shows an advisory note.
+value` (currency-invariant). If FX sources are down but the last table is <24h old, conversions use
+it with `fxStale:true` (amber "rates up to a day old" note); only when nothing usable remains are
+amounts summed unconverted (`fxLive:false, fxStale:false`, the "unconverted" advisory).
 
 **Per-stock history** (`GET /holdings/history/:symbol?days=N` → `StockHistory`): one stock's live
 quote + daily-close series (`QuoteService.fetchHistory(symbol, canadian)`; TMX for Canadian, Nasdaq/Cboe
@@ -742,10 +866,11 @@ the resume sent, the JD, an offer letter — nulled in `removeDocument`'s transa
 `update_application` (writes, explicit-request-gated) live in `agentic/ApplicationAgentTools.ts`;
 the action + loose-resolution logic lives in `services/applications.ts` (`createJobApplication`,
 `moveJobApplication`, `realignApplicationStage`, `resolveApplication`, `resolveStage`) and the HTTP
-route delegates to the same helpers. Client-side, a chat write dispatches a
-`stashd:applications-changed` window event (see `APP_WRITE_TOOLS` in `ChatSurface.tsx`) that
-`ApplicationsPage` listens for — the page owns its data, so the global-store `refresh()` used by
-document/ledger writes can't reach it. **Add any new application write tool to that array too.**
+route delegates to the same helpers. The write tools are confirm-before-apply (§3b): a chat write
+dispatches a `stashd:applications-changed` window event **when its approval card is applied** (see
+`APP_WRITE_TOOLS` in `ChatSurface.tsx`) — `ApplicationsPage` listens for it because the page owns
+its data, so the global-store `refresh()` used by document/ledger writes can't reach it. **Add any
+new application write tool to that array too (and to `WRITE_TOOLS` in `AgenticChatService.ts`).**
 
 **Snapshot & KPIs** (`services/applications.ts`, shared by the route and the chat tools): every read
 goes through `buildApplicationsSnapshot` → enriched applications (resolved `stage`, `lastActivityAt`
@@ -890,9 +1015,10 @@ Components call API functions from `api.ts` directly and then `refresh()`.
 | `GET /chat` / `POST /chat`                       | list conversations / start one (`{ title? }`; a legacy `mode` in the body is ignored)                               |
 | `GET /chat/:id` / `DELETE /chat/:id`             | conversation with messages + pins + attachments / delete it                                                         |
 | `PUT /chat/:id/pins`                             | replace pinned-document list `{ docIds }`                                                                            |
-| `POST /chat/:id/attachments`                     | multipart: drop a file into the conversation as chat-only context (extracted text; not filed; images 400, no-text 422) |
+| `POST /chat/:id/attachments`                     | multipart: drop a file into the conversation as chat-only context (extracted text; not filed; unsupported type/images 400, >50 MB 413, no-text 422) |
 | `DELETE /chat/:id/attachments/:attId`            | remove a chat attachment; 204                                                                                        |
 | `POST /chat/:id/messages`                        | send a user message; SSE stream of `token` / `tool` / `done` / `error` events                                        |
+| `POST /chat/:id/actions/:actionId`               | resolve a queued write proposal `{ approve }` — approve executes the server-stored args, decline dismisses (409 once resolved; 400 non-boolean) |
 | `GET /projects`                                  | all projects with computed money totals                                                                              |
 | `POST /projects`                                 | create a project `{ name, description? }`                                                                            |
 | `GET /projects/:id`                              | project detail with line items + totals                                                                              |

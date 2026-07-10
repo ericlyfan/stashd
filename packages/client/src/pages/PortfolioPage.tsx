@@ -393,7 +393,14 @@ export default function PortfolioPage() {
             </div>
           )}
 
-          {snap && snap.quotesLive && !snap.fxLive && (
+          {snap && snap.quotesLive && !snap.fxLive && snap.fxStale && (
+            <div className="portfolio-note rise rise-1">
+              The exchange-rate source is unreachable, so conversions to {base} are using the last
+              fetched rates (up to a day old). Rates refresh automatically when the FX source is back.
+            </div>
+          )}
+
+          {snap && snap.quotesLive && !snap.fxLive && !snap.fxStale && (
             <div className="portfolio-note rise rise-1">
               Live exchange rates are unavailable, so amounts in other currencies aren’t converted to
               {' '}{base} right now. Totals resume converting when the FX source is reachable.
